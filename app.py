@@ -140,8 +140,8 @@ for t in TICKERS:
     if t in precios and INFO.loc[t, "moneda_cotizada"] in tasas:
         precios_usd[t] = nc.precio_usd(float(precios[t]["cierre"].iloc[-1]), INFO.loc[t, "moneda_cotizada"], tasas)
 
-tab_mercado, tab_analisis, tab_trading, tab_te, tab_modelo = st.tabs(
-    ["🌎 Mercado", "📊 Análisis", "💼 Trading simulado", "🧪 Resultados en TE", "🧠 Modelo"])
+tab_mercado, tab_analisis, tab_trading, tab_bot, tab_te, tab_modelo = st.tabs(
+    ["🌎 Mercado", "📊 Análisis", "💼 Trading simulado", "🤖 Bot demo", "🧪 Resultados en TE", "🧠 Modelo"])
 
 # ===========================================================================
 # 1. MERCADO
@@ -402,6 +402,115 @@ with tab_trading:
         st.rerun()
     st.caption("USD/MXN, USD/JPY, USD/CAD y USD/CHF son solo de análisis: desde una cuenta en dólares su valor es constante. "
                "Los activos cotizados en otras monedas se convierten a USD con el tipo de cambio del último cierre.")
+
+# ===========================================================================
+# BOT DEMO (simulación con topes de compra y de venta)
+# ===========================================================================
+with tab_bot:
+    st.markdown("### 🤖 Bot de trading · modo demostración")
+    st.warning("**DEMO con precios simulados.** Los precios se mueven al azar alrededor del último precio real de cada "
+               "activo. El bot compra cuando el precio baja hasta el **tope de compra** y vende solo cuando sube hasta "
+               "el **tope de venta**, así que cada operación cerrada termina en ganancia. **No es el rendimiento de los "
+               "modelos ni dinero real**: los resultados reales están en la pestaña «Resultados en TE».")
+
+    if "bot" not in st.session_state:
+        st.session_state.bot, st.session_state.bot_corriendo = None, False
+
+    operables_bot = [t for t in TICKERS if t in precios_usd and t not in nc.SOLO_ANALISIS]
+    por_defecto = [t for t in ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"] if t in operables_bot]
+    with st.form("form_bot"):
+        f1, f2, f3 = st.columns(3)
+        activos_bot = f1.multiselect("Activos del bot", operables_bot, default=por_defecto, max_selections=8)
+        capital_bot = f2.number_input("Capital inicial (USD)", min_value=1_000.0, value=100_000.0, step=5_000.0)
+        monto_bot = f3.number_input("Monto por operación (USD)", min_value=100.0, value=10_000.0, step=1_000.0)
+        g1, g2, g3 = st.columns(3)
+        tope_compra = g1.slider("Tope de compra: comprar si el precio baja", 0.5, 5.0, 1.5, 0.5, format="%.1f%%")
+        tope_venta = g2.slider("Tope de venta: vender al ganar", 0.5, 5.0, 2.0, 0.5, format="%.1f%%")
+        velocidad = g3.select_slider("Velocidad", options=["Lenta", "Normal", "Rápida"], value="Normal")
+        iniciar = st.form_submit_button("▶️ Iniciar bot nuevo", type="primary")
+    if iniciar:
+        try:
+            st.session_state.bot = nc.bot_nuevo({t: precios_usd[t] for t in activos_bot}, capital_bot, monto_bot,
+                                                tope_compra / 100, tope_venta / 100)
+            st.session_state.bot_corriendo = True
+            st.session_state.bot_velocidad = velocidad
+        except ValueError as e:
+            st.error(str(e))
+
+    b1, b2, _ = st.columns([1, 1, 4])
+    if st.session_state.bot is not None:
+        if b1.button("⏸️ Pausar" if st.session_state.bot_corriendo else "▶️ Reanudar"):
+            st.session_state.bot_corriendo = not st.session_state.bot_corriendo
+            st.rerun()
+        if b2.button("♻️ Reiniciar"):
+            st.session_state.bot, st.session_state.bot_corriendo = None, False
+            st.rerun()
+
+    intervalo = {"Lenta": 2.0, "Normal": 1.0, "Rápida": 0.5}.get(st.session_state.get("bot_velocidad", "Normal"), 1.0)
+
+    @st.fragment(run_every=intervalo if st.session_state.bot_corriendo else None)
+    def panel_bot():
+        bot = st.session_state.bot
+        if bot is None:
+            st.info("Configura los topes y presiona **Iniciar bot nuevo**.")
+            return
+        if st.session_state.bot_corriendo:
+            for _ in range(3):                      # 3 movimientos de mercado por actualización
+                nc.bot_paso(bot)
+        r = nc.bot_resumen(bot)
+        estado = "🟢 Operando" if st.session_state.bot_corriendo else "⏸️ En pausa"
+        st.caption(f"{estado} · tick {bot['t']} · tope de compra −{bot['tope_compra']:.1%} · "
+                   f"tope de venta +{bot['tope_venta']:.1%} · comisión 0.10% por operación")
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("Ganancia realizada", f"${r['ganancia_realizada']:,.2f}",
+                  pct(r["ganancia_realizada"] / bot["capital"]))
+        k2.metric("Patrimonio", f"${r['patrimonio']:,.2f}", pct(r["patrimonio"] / bot["capital"] - 1))
+        k3.metric("Efectivo", f"${r['efectivo']:,.2f}")
+        k4.metric("Operaciones cerradas", r["operaciones_cerradas"],
+                  f"{r['operaciones_ganadoras']} con ganancia", delta_color="off")
+        k5.metric("Comisiones", f"${r['comisiones']:,.2f}")
+
+        g_izq, g_der = st.columns([2.2, 1])
+        with g_izq:
+            ver = st.selectbox("Ver activo", list(bot["activos"].keys()), key="bot_ver")
+            a = bot["activos"][ver]
+            ticks, valores = zip(*a["historia"])
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=list(ticks), y=list(valores), name="Precio simulado", line=dict(color=AZUL, width=2)))
+            ops = [o for o in bot["operaciones"] if o["ticker"] == ver and o["tick"] >= ticks[0]]
+            compras, ventas = [o for o in ops if o["tipo"] == "compra"], [o for o in ops if o["tipo"] == "venta"]
+            if compras:
+                fig.add_trace(go.Scatter(x=[o["tick"] for o in compras], y=[o["precio"] for o in compras], mode="markers",
+                                         name="Compra", marker=dict(symbol="triangle-up", size=13, color=VERDE)))
+            if ventas:
+                fig.add_trace(go.Scatter(x=[o["tick"] for o in ventas], y=[o["precio"] for o in ventas], mode="markers",
+                                         name="Venta con ganancia", marker=dict(symbol="triangle-down", size=13, color=NARANJA)))
+            fig.add_hline(y=a["referencia_compra"], line_dash="dot", line_color=VERDE, annotation_text="tope de compra")
+            if a["precio_compra"] is not None:
+                fig.add_hline(y=a["precio_compra"] * (1 + bot["tope_venta"]), line_dash="dot", line_color=NARANJA,
+                              annotation_text="tope de venta")
+            fig.update_layout(xaxis_title="tick (movimiento del mercado simulado)", yaxis_title="Precio (USD)")
+            st.plotly_chart(layout_grafica(fig, 380), width="stretch")
+        with g_der:
+            st.markdown("**Posiciones abiertas** (esperando el tope de venta)")
+            if len(r["abiertas"]):
+                st.dataframe(r["abiertas"], hide_index=True, width="stretch", column_config={
+                    "precio_compra": st.column_config.NumberColumn("compra", format="$%.2f"),
+                    "precio_actual": st.column_config.NumberColumn("actual", format="$%.2f"),
+                    "objetivo_venta": st.column_config.NumberColumn("objetivo", format="$%.2f"),
+                    "variacion_%": st.column_config.NumberColumn("var.", format="%+.2f%%")})
+            else:
+                st.caption("Sin posiciones abiertas: esperando que algún precio baje al tope de compra.")
+        if bot["operaciones"]:
+            st.markdown("**Últimas operaciones**")
+            st.dataframe(pd.DataFrame(bot["operaciones"][-15:][::-1]), hide_index=True, width="stretch", column_config={
+                "precio": st.column_config.NumberColumn(format="$%.2f"),
+                "unidades": st.column_config.NumberColumn(format="%.4f"),
+                "monto_usd": st.column_config.NumberColumn(format="$%.2f"),
+                "comision_usd": st.column_config.NumberColumn(format="$%.2f"),
+                "ganancia_usd": st.column_config.NumberColumn(format="$%+.2f")})
+
+    panel_bot()
 
 # ===========================================================================
 # 4. RESULTADOS EN TE (backtest del Notebook 5)
