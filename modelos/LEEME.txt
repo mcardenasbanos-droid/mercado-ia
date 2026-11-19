@@ -1,0 +1,1 @@
+Aquí van los archivos .keras y _config.joblib (carpeta modelos/ de paquete_app.zip).

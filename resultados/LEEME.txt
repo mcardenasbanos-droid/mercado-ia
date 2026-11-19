@@ -1,0 +1,1 @@
+Aquí van los CSV (carpeta resultados/ de paquete_app.zip).
