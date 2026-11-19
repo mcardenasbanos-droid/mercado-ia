@@ -1,9 +1,12 @@
 """
-Mercado IA — Pronóstico con Deep Learning y trading simulado
+Investify — Pronóstico con Deep Learning y trading simulado
 Proyecto final · Deep Learning para Finanzas
 
 Ejecutar:  streamlit run app.py
 """
+import os
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -12,42 +15,157 @@ import streamlit as st
 
 import nucleo as nc
 
-st.set_page_config(page_title="Mercado IA · Pronóstico y trading", page_icon="📈",
+RUTA_LOGO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
+st.set_page_config(page_title="Investify · Pronóstico y trading con IA",
+                   page_icon=RUTA_LOGO if os.path.exists(RUTA_LOGO) else "📈",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ---------------------------------------------------------------------------
-# Estilo
+# Identidad visual de Investify
 # ---------------------------------------------------------------------------
-VERDE, ROJO, AZUL, NARANJA, GRIS = "#22c55e", "#ef4444", "#3b82f6", "#f59e0b", "#94a3b8"
+VERDE, ROJO, AZUL, NARANJA, GRIS = "#10b981", "#f43f5e", "#6366f1", "#f59e0b", "#64748b"
+INDIGO, TURQUESA = "#6366f1", "#14b8a6"
+
+LOGO_SVG = """<svg width="{s}" height="{s}" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/>
+<stop offset="1" stop-color="#14b8a6"/></linearGradient></defs>
+<rect width="64" height="64" rx="16" fill="url(#g)"/>
+<polyline points="14,44 25,33 34,39 50,21" fill="none" stroke="#fff" stroke-width="5.5"
+ stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="53,17 41,19 51,29" fill="#fff"/></svg>"""
+
 st.markdown("""
 <style>
-.block-container {padding-top: 1.6rem; padding-bottom: 2rem;}
-[data-testid="stMetric"] {background: rgba(148,163,184,0.08); border: 1px solid rgba(148,163,184,0.18);
-    border-radius: 14px; padding: 14px 16px;}
-[data-testid="stMetricLabel"] p {font-size: 0.82rem; opacity: 0.8;}
-.titulo {font-size: 2.0rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0;}
-.subtitulo {opacity: 0.7; margin-top: 0.1rem; margin-bottom: 1.2rem;}
-.tarjeta {border-radius: 16px; padding: 18px 20px; border: 1px solid rgba(148,163,184,0.25);
-    background: linear-gradient(135deg, rgba(34,197,94,0.10), rgba(59,130,246,0.06));}
-.tarjeta.efectivo {background: linear-gradient(135deg, rgba(148,163,184,0.12), rgba(59,130,246,0.05));}
-.tarjeta h3 {margin: 0 0 4px 0; font-size: 0.9rem; opacity: 0.75; font-weight: 600;}
-.tarjeta .grande {font-size: 2.1rem; font-weight: 800; line-height: 1.1;}
-.chip {display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 700;}
-.chip.comprar {background: rgba(34,197,94,0.18); color: #22c55e;}
-.chip.efectivo {background: rgba(148,163,184,0.2); color: #cbd5e1;}
-.nota {font-size: 0.8rem; opacity: 0.65;}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+html, body, .stApp, .stMarkdown, p, li, label, h1, h2, h3, h4, h5, input, textarea, button,
+[data-testid="stMetricValue"], [data-testid="stMetricLabel"], [data-baseweb="tab"] {
+    font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+}
+[data-testid="stIconMaterial"] {font-family: 'Material Symbols Rounded' !important;}
+
+/* Fondo y contenedor */
+.stApp {background: radial-gradient(1200px 600px at 10% -10%, rgba(99,102,241,0.10), transparent 60%),
+                     radial-gradient(900px 500px at 100% 0%, rgba(20,184,166,0.08), transparent 60%), #070b14;}
+.block-container {padding-top: 1.2rem; padding-bottom: 3rem; max-width: 1400px;}
+#MainMenu, footer, [data-testid="stDecoration"], [data-testid="stAppDeployButton"] {visibility: hidden; display: none;}
+header[data-testid="stHeader"] {background: transparent;}
+
+/* Barra lateral */
+[data-testid="stSidebar"] {background: linear-gradient(180deg, #0c1222 0%, #090e1a 100%);
+    border-right: 1px solid rgba(148,163,184,0.10);}
+[data-testid="stSidebar"] .marca {display:flex; align-items:center; gap:10px; margin: 4px 0 2px 0;}
+[data-testid="stSidebar"] .marca span {font-size: 1.35rem; font-weight: 800; letter-spacing: -0.02em;}
+.etiqueta-lateral {font-size: 0.7rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+    color: #64748b; margin: 18px 0 6px 0;}
+
+/* Encabezado */
+.encabezado {display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+    padding: 18px 22px; border-radius: 20px; margin-bottom: 14px;
+    background: linear-gradient(120deg, rgba(99,102,241,0.16), rgba(20,184,166,0.10));
+    border: 1px solid rgba(148,163,184,0.14);}
+.encabezado .izq {display:flex; align-items:center; gap:14px;}
+.encabezado h1 {font-size: 1.9rem; font-weight: 800; letter-spacing: -0.03em; margin: 0; padding: 0; line-height: 1.1;}
+.encabezado h1 .acento {background: linear-gradient(90deg, #818cf8, #2dd4bf); -webkit-background-clip: text;
+    background-clip: text; color: transparent;}
+.encabezado p {margin: 2px 0 0 0; color: #94a3b8; font-size: 0.92rem;}
+.estado {display:flex; gap:8px; flex-wrap:wrap;}
+.pastilla {padding: 6px 12px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; color: #cbd5e1;
+    background: rgba(15,23,42,0.7); border: 1px solid rgba(148,163,184,0.18);}
+.punto {display:inline-block; width:8px; height:8px; border-radius:50%; background:#10b981; margin-right:6px;
+    box-shadow: 0 0 0 0 rgba(16,185,129,0.6); animation: latido 2s infinite;}
+@keyframes latido {0% {box-shadow: 0 0 0 0 rgba(16,185,129,0.55);} 70% {box-shadow: 0 0 0 8px rgba(16,185,129,0);}
+    100% {box-shadow: 0 0 0 0 rgba(16,185,129,0);}}
+
+/* Cinta de precios */
+.cinta {overflow: hidden; white-space: nowrap; border-radius: 14px; margin-bottom: 18px; padding: 9px 0;
+    background: rgba(15,23,42,0.65); border: 1px solid rgba(148,163,184,0.12);
+    mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);}
+.cinta-pista {display: inline-block; animation: desliza 90s linear infinite;}
+.cinta:hover .cinta-pista {animation-play-state: paused;}
+.cinta .item {display:inline-block; margin: 0 22px; font-size: 0.86rem; color: #cbd5e1;}
+.cinta .item b {color: #f1f5f9; font-weight: 700; margin-right: 6px;}
+.sube {color: #10b981; font-weight: 600;} .baja {color: #f43f5e; font-weight: 600;}
+@keyframes desliza {from {transform: translateX(0);} to {transform: translateX(-50%);}}
+
+/* Pestañas tipo "pill" */
+.stTabs [data-baseweb="tab-list"] {gap: 6px; background: rgba(15,23,42,0.6); padding: 6px; border-radius: 14px;
+    border: 1px solid rgba(148,163,184,0.12);}
+.stTabs [data-baseweb="tab"] {height: 40px; padding: 0 18px; border-radius: 10px; color: #94a3b8; font-weight: 600;}
+.stTabs [data-baseweb="tab"]:hover {color: #e2e8f0; background: rgba(148,163,184,0.08);}
+.stTabs [aria-selected="true"] {color: #fff !important;
+    background: linear-gradient(90deg, rgba(99,102,241,0.9), rgba(20,184,166,0.85)) !important;}
+.stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] {display: none;}
+.stTabs [data-baseweb="tab-panel"] {padding-top: 18px;}
+
+/* Tarjetas de métricas */
+[data-testid="stMetric"] {background: linear-gradient(180deg, rgba(30,41,59,0.55), rgba(15,23,42,0.55));
+    border: 1px solid rgba(148,163,184,0.14); border-radius: 16px; padding: 16px 18px;
+    transition: transform .15s ease, border-color .15s ease;}
+[data-testid="stMetric"]:hover {transform: translateY(-2px); border-color: rgba(99,102,241,0.5);}
+[data-testid="stMetricLabel"] p {font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #94a3b8;}
+[data-testid="stMetricValue"] {font-weight: 700; letter-spacing: -0.02em;}
+
+/* Títulos de sección */
+.seccion {margin: 6px 0 14px 0;}
+.seccion h2 {font-size: 1.35rem; font-weight: 800; letter-spacing: -0.02em; margin: 0; padding: 0;}
+.seccion h2::before {content: ""; display: inline-block; width: 6px; height: 20px; border-radius: 3px;
+    margin-right: 10px; vertical-align: -3px; background: linear-gradient(180deg, #818cf8, #2dd4bf);}
+.seccion p {margin: 4px 0 0 16px; color: #94a3b8; font-size: 0.9rem;}
+.subseccion {font-size: 0.95rem; font-weight: 700; margin: 6px 0 8px 0; color: #e2e8f0;}
+
+/* Formularios, tablas y botones */
+[data-testid="stForm"] {background: rgba(15,23,42,0.55); border: 1px solid rgba(148,163,184,0.14);
+    border-radius: 16px; padding: 18px;}
+[data-testid="stDataFrame"] {border: 1px solid rgba(148,163,184,0.14); border-radius: 14px; overflow: hidden;}
+.stButton button, [data-testid="stFormSubmitButton"] button {border-radius: 10px; font-weight: 600;
+    border: 1px solid rgba(148,163,184,0.25); transition: all .15s ease;}
+.stButton button[kind="primary"], [data-testid="stFormSubmitButton"] button[kind="primaryFormSubmit"] {
+    background: linear-gradient(90deg, #6366f1, #14b8a6); border: none; color: white;}
+.stButton button:hover, [data-testid="stFormSubmitButton"] button:hover {transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(99,102,241,0.25);}
+[data-testid="stExpander"] {border-radius: 14px; border: 1px solid rgba(148,163,184,0.14);}
+
+/* Tarjeta de pronóstico */
+.tarjeta {border-radius: 18px; padding: 20px 22px; border: 1px solid rgba(16,185,129,0.35);
+    background: linear-gradient(145deg, rgba(16,185,129,0.14), rgba(99,102,241,0.08));}
+.tarjeta.efectivo {border-color: rgba(148,163,184,0.25);
+    background: linear-gradient(145deg, rgba(100,116,139,0.16), rgba(99,102,241,0.06));}
+.tarjeta h3 {margin: 0 0 6px 0; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #94a3b8;}
+.tarjeta .grande {font-size: 2.3rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1;}
+.chip {display: inline-block; padding: 5px 12px; border-radius: 999px; font-size: 0.72rem; font-weight: 800;
+    letter-spacing: 0.06em;}
+.chip.comprar {background: rgba(16,185,129,0.18); color: #34d399; border: 1px solid rgba(16,185,129,0.35);}
+.chip.efectivo {background: rgba(100,116,139,0.2); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3);}
+.nota {font-size: 0.78rem; color: #64748b;}
+.pie {text-align: center; color: #475569; font-size: 0.78rem; margin-top: 36px; padding-top: 16px;
+    border-top: 1px solid rgba(148,163,184,0.1);}
 </style>
 """, unsafe_allow_html=True)
 
 
 def layout_grafica(fig, alto=520):
-    fig.update_layout(template="plotly_dark", height=alto, margin=dict(l=10, r=10, t=30, b=10),
+    fig.update_layout(template="plotly_dark", height=alto, margin=dict(l=10, r=10, t=36, b=10),
                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                      legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
-                      hovermode="x unified", font=dict(size=12))
-    fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(gridcolor="rgba(148,163,184,0.12)")
+                      legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
+                                  bgcolor="rgba(0,0,0,0)"),
+                      hovermode="x unified", font=dict(family="Inter, sans-serif", size=12, color="#cbd5e1"),
+                      hoverlabel=dict(bgcolor="#0f172a", bordercolor="#334155", font=dict(family="Inter")))
+    fig.update_xaxes(showgrid=False, linecolor="rgba(148,163,184,0.2)")
+    fig.update_yaxes(gridcolor="rgba(148,163,184,0.08)", zeroline=False)
     return fig
+
+
+def seccion(titulo, subtitulo=""):
+    st.markdown(f'<div class="seccion"><h2>{titulo}</h2>{f"<p>{subtitulo}</p>" if subtitulo else ""}</div>',
+                unsafe_allow_html=True)
+
+
+def subseccion(titulo):
+    st.markdown(f'<div class="subseccion">{titulo}</div>', unsafe_allow_html=True)
 
 
 def pct(x, dec=2):
@@ -77,7 +195,7 @@ MERCADOS = ["Acciones", "Criptomonedas", "Divisas"]
 
 @st.cache_data(ttl=900, show_spinner="Descargando precios de Yahoo Finance…")
 def datos_mercado(tickers, periodo):
-    return nc.descargar_precios(list(tickers), periodo)
+    return nc.descargar_precios(list(tickers), periodo), datetime.now().strftime("%H:%M")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -94,38 +212,35 @@ def resultado(nombre):
 # Barra lateral
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("## 📈 Mercado IA")
-    st.caption("Pronóstico con MLP / LSTM · 40 activos · datos de Yahoo Finance")
-    mercado_sel = st.radio("Mercado", ["Todos"] + MERCADOS, horizontal=False)
+    st.markdown(f'<div class="marca">{LOGO_SVG.format(s=34)}<span>Investify</span></div>', unsafe_allow_html=True)
+    st.caption("Pronóstico con redes neuronales · 40 activos")
+    st.markdown('<div class="etiqueta-lateral">Mercado</div>', unsafe_allow_html=True)
+    mercado_sel = st.segmented_control("Mercado", ["Todos"] + MERCADOS, default="Todos",
+                                       label_visibility="collapsed") or "Todos"
     opciones = TICKERS if mercado_sel == "Todos" else FICHA.loc[FICHA.mercado == mercado_sel, "ticker"].tolist()
-    ticker = st.selectbox("Activo", opciones, format_func=lambda t: f"{t} · {INFO.loc[t, 'nombre']}")
-    periodo = st.select_slider("Historia en la gráfica", options=["6mo", "1y", "2y", "5y"], value="1y")
-    st.markdown("**Indicadores**")
+    st.markdown('<div class="etiqueta-lateral">Activo</div>', unsafe_allow_html=True)
+    ticker = st.selectbox("Activo", opciones, format_func=lambda t: f"{t} · {INFO.loc[t, 'nombre']}",
+                          label_visibility="collapsed")
+    st.markdown('<div class="etiqueta-lateral">Gráfica</div>', unsafe_allow_html=True)
+    periodo = st.select_slider("Historia en la gráfica", options=["6mo", "1y", "2y", "5y"], value="1y",
+                               format_func=lambda p: {"6mo": "6 meses", "1y": "1 año", "2y": "2 años", "5y": "5 años"}[p])
     ver_sma = st.toggle("SMA 20", value=True)
     ver_bb = st.toggle("Bandas de Bollinger", value=True)
     ver_rsi = st.toggle("RSI 14", value=True)
     ver_macd = st.toggle("MACD", value=False)
     st.divider()
-    if st.button("🔄 Actualizar datos"):
+    if st.button("Actualizar datos"):
         st.cache_data.clear()
         st.rerun()
-    st.markdown('<p class="nota">Proyecto académico. Las señales no son recomendaciones de inversión. '
-                'El portafolio es simulado: no se usa dinero real.</p>', unsafe_allow_html=True)
+    st.markdown('<p class="nota">Proyecto académico de Deep Learning para Finanzas. Las señales no son '
+                'recomendaciones de inversión y el portafolio es simulado.</p>', unsafe_allow_html=True)
 
 # Se descargan 2 años para todos (suficiente para indicadores y gráficas) y 5 años solo si se pide
-precios = datos_mercado(tuple(TICKERS), "5y" if periodo == "5y" else "2y")
+precios, hora_datos = datos_mercado(tuple(TICKERS), "5y" if periodo == "5y" else "2y")
 if not precios:
     st.error("No se pudieron descargar datos de Yahoo Finance. Revisa tu conexión y presiona «Actualizar datos».")
     st.stop()
 faltantes = [t for t in TICKERS if t not in precios]
-
-st.markdown('<p class="titulo">Mercado IA</p>', unsafe_allow_html=True)
-st.markdown('<p class="subtitulo">Pronóstico del rendimiento del siguiente día con redes neuronales '
-            'y portafolio de trading simulado</p>', unsafe_allow_html=True)
-if faltantes:
-    st.warning(f"Sin datos por ahora: {', '.join(faltantes)}. Intenta «Actualizar datos» en unos minutos.")
-if not nc.tf_disponible():
-    st.info("TensorFlow no está instalado: se muestran los pronósticos guardados del Notebook 5.")
 
 # Pronósticos de los 40 activos (se calculan una vez por hora)
 pronosticos = {}
@@ -133,6 +248,37 @@ with st.spinner("Calculando pronósticos con los modelos…"):
     for t in TICKERS:
         if t in precios:
             pronosticos[t] = pronostico_cacheado(t, precios[t], INFO.loc[t, "mercado"])
+n_compra = sum(1 for p in pronosticos.values() if p and p.get("senal") == "comprar")
+
+# Encabezado
+st.markdown(f"""
+<div class="encabezado">
+  <div class="izq">{LOGO_SVG.format(s=52)}
+    <div><h1>Invest<span class="acento">ify</span></h1>
+    <p>Pronóstico del siguiente día con redes neuronales MLP y LSTM · trading simulado</p></div>
+  </div>
+  <div class="estado">
+    <span class="pastilla"><span class="punto"></span>Datos de Yahoo Finance · {hora_datos}</span>
+    <span class="pastilla">{len(precios)} activos</span>
+    <span class="pastilla">{n_compra} señales de compra</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+# Cinta de precios
+items = []
+for t in TICKERS:
+    if t in precios and len(precios[t]) > 1:
+        c = precios[t]["cierre"]
+        cambio = c.iloc[-1] / c.iloc[-2] - 1
+        clase, flecha = ("sube", "▲") if cambio >= 0 else ("baja", "▼")
+        items.append(f'<span class="item"><b>{t.replace("-USD", "").replace("=X", "")}</b>'
+                     f'{c.iloc[-1]:,.2f} <span class="{clase}">{flecha} {abs(cambio):.2%}</span></span>')
+st.markdown(f'<div class="cinta"><div class="cinta-pista">{"".join(items) * 2}</div></div>', unsafe_allow_html=True)
+
+if faltantes:
+    st.warning(f"Sin datos por ahora: {', '.join(faltantes)}. Intenta «Actualizar datos» en unos minutos.")
+if not nc.tf_disponible():
+    st.info("TensorFlow no está instalado: se muestran los pronósticos guardados del Notebook 5.")
 
 tasas = nc.tasas_usd(precios)
 precios_usd = {}
@@ -141,7 +287,7 @@ for t in TICKERS:
         precios_usd[t] = nc.precio_usd(float(precios[t]["cierre"].iloc[-1]), INFO.loc[t, "moneda_cotizada"], tasas)
 
 tab_mercado, tab_analisis, tab_trading, tab_bot, tab_te, tab_modelo = st.tabs(
-    ["🌎 Mercado", "📊 Análisis", "💼 Trading simulado", "🤖 Bot demo", "🧪 Resultados en TE", "🧠 Modelo"])
+    ["Mercado", "Análisis", "Portafolio", "Bot demo", "Resultados", "Modelo"])
 
 # ===========================================================================
 # 1. MERCADO
@@ -163,14 +309,15 @@ with tab_mercado:
             "Tendencia (3 meses)": c.iloc[-63:].round(6).tolist(),
             "RSI 14": float(ind["rsi14"].iloc[-1]),
             "Pronóstico mañana": p.get("estimado_dl", np.nan) * 100 if p else np.nan,
-            "Señal": "🟢 Comprar" if p.get("senal") == "comprar" else "⚪ Efectivo",
+            "Señal": "Comprar" if p.get("senal") == "comprar" else "Efectivo",
         })
     tabla = pd.DataFrame(filas)
     if mercado_sel != "Todos":
         tabla = tabla[tabla.Mercado == mercado_sel]
 
+    seccion("Panorama del mercado", "Precios, tendencia, RSI y el pronóstico de la red para el siguiente periodo")
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Activos con señal de compra", f"{(tabla['Señal'] == '🟢 Comprar').sum()} de {len(tabla)}")
+    k1.metric("Señales de compra", f"{(tabla['Señal'] == 'Comprar').sum()} de {len(tabla)}")
     mejor = tabla.loc[tabla["1 día"].idxmax()] if len(tabla) else None
     peor = tabla.loc[tabla["1 día"].idxmin()] if len(tabla) else None
     k2.metric("Mejor del día", mejor["Ticker"] if mejor is not None else "—",
@@ -179,8 +326,16 @@ with tab_mercado:
               f"{peor['1 día']:+.2f}%" if peor is not None else None)
     k4.metric("Pronóstico promedio", f"{tabla['Pronóstico mañana'].mean():+.3f}%")
 
+    def _color(v):
+        if isinstance(v, str):
+            return "color: #34d399; font-weight: 700" if v == "Comprar" else "color: #94a3b8"
+        if pd.isna(v):
+            return ""
+        return "color: #34d399" if v > 0 else ("color: #fb7185" if v < 0 else "")
+
+    estilo = tabla.style.map(_color, subset=["1 día", "1 mes", "Pronóstico mañana", "Señal"])
     st.dataframe(
-        tabla, hide_index=True, width="stretch", height=min(42 + 35 * len(tabla), 760),
+        estilo, hide_index=True, width="stretch", height=min(42 + 35 * len(tabla), 760),
         column_config={
             "Precio": st.column_config.NumberColumn(format="%.4f"),
             "1 día": st.column_config.NumberColumn(format="%+.2f%%"),
@@ -205,8 +360,8 @@ with tab_analisis:
         p = pronosticos.get(ticker)
         c = df["cierre"]
 
-        st.markdown(f"### {INFO.loc[ticker, 'nombre']}  ·  `{ticker}`")
-        st.caption(f"{INFO.loc[ticker, 'mercado']} · Moneda: {moneda} · Calendario: {INFO.loc[ticker, 'calendario']}")
+        seccion(f"{INFO.loc[ticker, 'nombre']} <span style='color:#64748b;font-weight:600'>· {ticker}</span>",
+                f"{INFO.loc[ticker, 'mercado']} · Moneda: {moneda} · {INFO.loc[ticker, 'calendario']}")
 
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Último cierre", dinero(c.iloc[-1], moneda), pct(c.iloc[-1] / c.iloc[-2] - 1))
@@ -227,7 +382,7 @@ with tab_analisis:
                   <h3>Pronóstico para {p['proximo_periodo']}</h3>
                   <div class="grande" style="color:{color}">{p['estimado_dl']:+.3%}</div>
                   <div style="margin:6px 0 10px 0;">Precio estimado: <b>{dinero(p['precio_estimado'], moneda)}</b></div>
-                  <span class="chip {clase}">{'🟢 COMPRAR' if clase == 'comprar' else '⚪ PERMANECER EN EFECTIVO'}</span>
+                  <span class="chip {clase}">{'▲ COMPRAR' if clase == 'comprar' else 'PERMANECER EN EFECTIVO'}</span>
                 </div>""", unsafe_allow_html=True)
                 st.write("")
                 if p.get("red"):
@@ -310,9 +465,8 @@ with tab_trading:
     port = st.session_state.portafolio
     tabla_pos, res = nc.valorar(port, precios_usd)
 
-    st.markdown("### 💼 Portafolio simulado")
-    st.caption("Cuenta en dólares · sin apalancamiento ni ventas en corto · comisión de 0.10% por compra y por venta · "
-               "se opera al último precio disponible.")
+    seccion("Portafolio simulado", "Cuenta en dólares · sin apalancamiento ni ventas en corto · comisión de 0.10% "
+                                   "por compra y por venta · se opera al último precio disponible")
     r1, r2, r3, r4, r5 = st.columns(5)
     r1.metric("Patrimonio", f"${res['patrimonio']:,.2f}", pct(res["rendimiento"]))
     r2.metric("Efectivo", f"${res['efectivo']:,.2f}")
@@ -325,7 +479,7 @@ with tab_trading:
     c_compra, c_venta, c_auto = st.columns(3)
     with c_compra:
         with st.form("form_compra", clear_on_submit=False):
-            st.markdown("#### 🟢 Comprar")
+            subseccion("Comprar")
             t_c = st.selectbox("Activo", operables, index=operables.index(ticker) if ticker in operables else 0,
                                format_func=lambda t: f"{t} · ${precios_usd[t]:,.4f}")
             monto = st.number_input("Monto en USD (incluye comisión)", min_value=0.0,
@@ -335,13 +489,13 @@ with tab_trading:
                 try:
                     u = nc.comprar(port, t_c, monto, precios_usd[t_c])
                     nc.guardar_portafolio(port)
-                    st.toast(f"Compraste {u:,.6f} de {t_c}", icon="✅")
+                    st.toast(f"Compraste {u:,.6f} de {t_c}")
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))
     with c_venta:
         with st.form("form_venta"):
-            st.markdown("#### 🔴 Vender")
+            subseccion("Vender")
             con_pos = list(port["posiciones"].keys())
             t_v = st.selectbox("Posición", con_pos if con_pos else ["(sin posiciones)"])
             frac = st.slider("Porcentaje a vender", 1, 100, 100, format="%d%%")
@@ -351,25 +505,25 @@ with tab_trading:
                         raise ValueError("No tienes posiciones abiertas.")
                     neto = nc.vender(port, t_v, frac / 100, precios_usd[t_v])
                     nc.guardar_portafolio(port)
-                    st.toast(f"Venta de {t_v}: recibiste ${neto:,.2f}", icon="💵")
+                    st.toast(f"Venta de {t_v}: recibiste ${neto:,.2f}")
                     st.rerun()
                 except (ValueError, KeyError) as e:
                     st.error(str(e))
     with c_auto:
         with st.form("form_auto"):
-            st.markdown("#### 🤖 Seguir al modelo")
+            subseccion("Seguir al modelo")
             st.caption("Vende las posiciones con señal «efectivo» y compra los activos con señal «comprar».")
             monto_auto = st.number_input("USD por activo", min_value=100.0, value=5_000.0, step=500.0)
             if st.form_submit_button("Ejecutar señales"):
                 acciones = nc.ejecutar_senales(port, pronosticos, precios_usd, monto_auto)
                 nc.guardar_portafolio(port)
-                st.toast(f"{len(acciones)} operaciones ejecutadas" if acciones else "Nada que ejecutar", icon="🤖")
+                st.toast(f"{len(acciones)} operaciones ejecutadas" if acciones else "Nada que ejecutar")
                 st.rerun()
 
     st.write("")
     c_tab, c_dona = st.columns([2, 1])
     with c_tab:
-        st.markdown("#### Posiciones abiertas")
+        subseccion("Posiciones abiertas")
         if len(tabla_pos):
             st.dataframe(tabla_pos, hide_index=True, width="stretch", column_config={
                 "unidades": st.column_config.NumberColumn(format="%.6f"),
@@ -381,14 +535,16 @@ with tab_trading:
         else:
             st.info("Aún no tienes posiciones. Compra un activo o deja que el modelo opere por ti.")
     with c_dona:
-        st.markdown("#### Distribución")
+        subseccion("Distribución")
         etiquetas = ["Efectivo"] + tabla_pos["ticker"].tolist()
         valores = [port["efectivo"]] + tabla_pos["valor_usd"].fillna(0).tolist()
-        fig = go.Figure(go.Pie(labels=etiquetas, values=valores, hole=0.6, textinfo="percent", sort=False))
+        paleta = ["#334155", "#6366f1", "#14b8a6", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6", "#06b6d4", "#84cc16", "#f97316"]
+        fig = go.Figure(go.Pie(labels=etiquetas, values=valores, hole=0.62, textinfo="percent", sort=False,
+                               marker=dict(colors=(paleta * 5)[:len(etiquetas)], line=dict(color="#070b14", width=2))))
         st.plotly_chart(layout_grafica(fig, 300), width="stretch")
 
     if port["operaciones"]:
-        st.markdown("#### Historial de operaciones")
+        subseccion("Historial de operaciones")
         hist = pd.DataFrame(port["operaciones"]).iloc[::-1]
         st.dataframe(hist, hide_index=True, width="stretch", column_config={
             "unidades": st.column_config.NumberColumn(format="%.6f"),
@@ -396,7 +552,7 @@ with tab_trading:
             "monto_usd": st.column_config.NumberColumn(format="$%.2f"),
             "comision_usd": st.column_config.NumberColumn(format="$%.2f"),
             "resultado_usd": st.column_config.NumberColumn(format="$%+.2f")})
-    if st.button("♻️ Reiniciar portafolio a $100,000"):
+    if st.button("Reiniciar portafolio a $100,000"):
         st.session_state.portafolio = nc.portafolio_nuevo()
         nc.guardar_portafolio(st.session_state.portafolio)
         st.rerun()
@@ -407,7 +563,7 @@ with tab_trading:
 # BOT DEMO (simulación con topes de compra y de venta)
 # ===========================================================================
 with tab_bot:
-    st.markdown("### 🤖 Bot de trading · modo demostración")
+    seccion("Bot de trading", "Modo demostración con topes de compra y de venta")
     st.warning("**DEMO con precios simulados.** Los precios se mueven al azar alrededor del último precio real de cada "
                "activo. El bot compra cuando el precio baja hasta el **tope de compra** y vende solo cuando sube hasta "
                "el **tope de venta**, así que cada operación cerrada termina en ganancia. **No es el rendimiento de los "
@@ -427,7 +583,7 @@ with tab_bot:
         tope_compra = g1.slider("Tope de compra: comprar si el precio baja", 0.5, 5.0, 1.5, 0.5, format="%.1f%%")
         tope_venta = g2.slider("Tope de venta: vender al ganar", 0.5, 5.0, 2.0, 0.5, format="%.1f%%")
         velocidad = g3.select_slider("Velocidad", options=["Lenta", "Normal", "Rápida"], value="Normal")
-        iniciar = st.form_submit_button("▶️ Iniciar bot nuevo", type="primary")
+        iniciar = st.form_submit_button("Iniciar bot", type="primary")
     if iniciar:
         try:
             st.session_state.bot = nc.bot_nuevo({t: precios_usd[t] for t in activos_bot}, capital_bot, monto_bot,
@@ -439,10 +595,10 @@ with tab_bot:
 
     b1, b2, _ = st.columns([1, 1, 4])
     if st.session_state.bot is not None:
-        if b1.button("⏸️ Pausar" if st.session_state.bot_corriendo else "▶️ Reanudar"):
+        if b1.button("Pausar" if st.session_state.bot_corriendo else "Reanudar"):
             st.session_state.bot_corriendo = not st.session_state.bot_corriendo
             st.rerun()
-        if b2.button("♻️ Reiniciar"):
+        if b2.button("Reiniciar"):
             st.session_state.bot, st.session_state.bot_corriendo = None, False
             st.rerun()
 
@@ -452,13 +608,13 @@ with tab_bot:
     def panel_bot():
         bot = st.session_state.bot
         if bot is None:
-            st.info("Configura los topes y presiona **Iniciar bot nuevo**.")
+            st.info("Configura los topes y presiona **Iniciar bot**.")
             return
         if st.session_state.bot_corriendo:
             for _ in range(3):                      # 3 movimientos de mercado por actualización
                 nc.bot_paso(bot)
         r = nc.bot_resumen(bot)
-        estado = "🟢 Operando" if st.session_state.bot_corriendo else "⏸️ En pausa"
+        estado = "● Operando" if st.session_state.bot_corriendo else "En pausa"
         st.caption(f"{estado} · tick {bot['t']} · tope de compra −{bot['tope_compra']:.1%} · "
                    f"tope de venta +{bot['tope_venta']:.1%} · comisión 0.10% por operación")
         k1, k2, k3, k4, k5 = st.columns(5)
@@ -522,8 +678,9 @@ with tab_te:
     if res_te is None:
         st.info("Copia los archivos de resultados del Notebook 5 a la carpeta `resultados/` para ver esta sección.")
     else:
-        st.markdown("### 🧪 Evaluación final en el conjunto de prueba (TE)")
-        st.caption("Periodo nunca usado para entrenar ni para elegir. Capital de 100,000, comisión de 0.10% y ejecución en la apertura de t+1.")
+        seccion("Evaluación final en el conjunto de prueba (TE)",
+                "Periodo nunca usado para entrenar ni para elegir · capital de 100,000 · comisión de 0.10% · "
+                "ejecución en la apertura de t+1")
         piv = res_te.pivot(index="ticker", columns="estrategia", values="rendimiento_neto")
         piv["mercado"] = INFO["mercado"]
         if mercado_sel != "Todos":
@@ -548,7 +705,7 @@ with tab_te:
         if sim is not None and ticker in set(sim.ticker):
             s = sim[sim.ticker == ticker].copy()
             s["fecha"] = pd.to_datetime(s["fecha"])
-            st.markdown(f"#### Patrimonio en TE · {ticker}")
+            subseccion(f"Patrimonio en TE · {ticker}")
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=s.fecha, y=s.patrimonio, name="Sistema DL", line=dict(color=VERDE, width=2)))
             if ticker in precios:
@@ -574,7 +731,7 @@ with tab_te:
 # 5. MODELO
 # ===========================================================================
 with tab_modelo:
-    st.markdown("### 🧠 Cómo funciona")
+    seccion("Cómo funciona Investify", "Del dato al pronóstico y a la señal")
     a, b, c = st.columns(3)
     a.markdown("**1 · Datos**  \nPrecios diarios ajustados de Yahoo Finance. Entradas: los 20 rendimientos más recientes "
                "(y, en la versión B, distancia a la SMA 20, volatilidad 20 y RSI 14).")
@@ -584,7 +741,7 @@ with tab_modelo:
                "(con o sin filtro SMA 20); si no, permanecer en efectivo.")
     met = resultado("metricas_TR_VA_TE.csv")
     if met is not None and ticker in set(met.ticker):
-        st.markdown(f"#### Métricas de {ticker} (escala original del rendimiento)")
+        subseccion(f"Métricas de {ticker} (escala original del rendimiento)")
         m = met[met.ticker == ticker].pivot_table(index="modelo", columns="conjunto",
                                                   values=["MAE", "RMSE", "precision_direccional"])
         m = m.reindex(columns=["TR", "VA", "TE"], level=1)
@@ -596,3 +753,6 @@ with tab_modelo:
     st.divider()
     st.markdown('<p class="nota">Proyecto académico de Deep Learning para Finanzas. Los rendimientos pasados no garantizan '
                 'resultados futuros. Las señales no son asesoría financiera.</p>', unsafe_allow_html=True)
+
+st.markdown('<div class="pie">Investify · Proyecto final de Deep Learning para Finanzas · '
+            'Datos: Yahoo Finance · Las señales no son asesoría financiera</div>', unsafe_allow_html=True)
