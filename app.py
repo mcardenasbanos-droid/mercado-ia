@@ -15,6 +15,7 @@ import streamlit as st
 
 import nucleo as nc
 import mexc_bot as mb
+import mexc_cuenta as mxc
 
 RUTA_LOGO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
 st.set_page_config(page_title="Investify · Pronóstico y trading con IA",
@@ -580,7 +581,8 @@ def tabla_operaciones(ops, alto=None):
         "Dirección": df["tipo"].map({"compra": "Comprar", "venta": "Vender"}),
         "Tipo de orden": "Mercado", "Precio ejecutado": df["precio"], "Cantidad": df["unidades"],
         "Monto (USDT)": df["monto_usdt"], "PNL (USDT)": df["ganancia_usdt"], "PNL %": df["ganancia_%"],
-        "Comisión (USDT)": df["comision_usdt"], "Estado": "Ejecutada", "Motivo": df["motivo"],
+        "Comisión (USDT)": df["comision_usdt"], "Estado": df.get("estado", "Ejecutada"),
+        "Modo": df.get("modo", "paper"), "Motivo": df["motivo"],
         "Fuente de precio": df.get("fuente", ""), "Sesión del bot": df.get("bot_id", ""),
     })
     estilo = tabla.style.map(lambda v: "" if v is None or pd.isna(v) else ("color: #34d399" if v > 0 else "color: #fb7185"),
@@ -597,13 +599,95 @@ def tabla_operaciones(ops, alto=None):
         "Comisión (USDT)": st.column_config.NumberColumn(format="%.4f")}, **kwargs)
 
 
+def llaves_mexc():
+    """Lee las llaves de .streamlit/secrets.toml ([mexc] api_key / secret_key) o de variables de entorno."""
+    try:
+        sec = st.secrets["mexc"]
+        return sec.get("api_key", ""), sec.get("secret_key", "")
+    except Exception:          # sin archivo de secretos o sin la sección [mexc]
+        return os.environ.get("MEXC_API_KEY", ""), os.environ.get("MEXC_SECRET_KEY", "")
+
+
+@st.cache_resource(show_spinner=False)
+def cliente_mexc(api_key, secret_key):
+    return mxc.ClienteMEXC(api_key, secret_key)
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def saldos_mexc(api_key, secret_key):
+    return cliente_mexc(api_key, secret_key).cuenta()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def operaciones_mexc(api_key, secret_key, par):
+    return cliente_mexc(api_key, secret_key).mis_operaciones(par, 50)
+
+
+CLAVE, SECRETO = llaves_mexc()
+CLIENTE = cliente_mexc(CLAVE, SECRETO) if CLAVE and SECRETO else None
+
 with tab_bot:
-    seccion("Bot de trading · MEXC (modo paper)", "Precios reales de MEXC en tiempo real · capital de práctica de "
-                                                  "50,000 USDT · no se envían órdenes reales a MEXC")
     if "mexc" not in st.session_state:
         st.session_state.mexc = mb.cargar_estado()
         st.session_state.mexc_corriendo = st.session_state.mexc["bot"] is not None
     est = st.session_state.mexc
+    modo_real = est["bot"] is not None and est["bot"].get("modo") == "real"
+    if modo_real:
+        seccion("Bot de trading · MEXC (MODO REAL)", "Órdenes reales en tu cuenta Spot de MEXC · aparecen en tu historial de MEXC")
+        st.error(f"**MODO REAL ACTIVO.** Cada compra y venta del bot usa dinero real de tu cuenta MEXC "
+                 f"({est['bot']['monto_operacion']:,.2f} USDT por orden, tope total {est['bot']['capital']:,.2f} USDT).")
+    else:
+        seccion("Bot de trading · MEXC (modo paper)", "Precios reales de MEXC en tiempo real · capital de práctica de "
+                                                      "50,000 USDT · no se envían órdenes reales a MEXC")
+
+    # ---------------- Mi cuenta MEXC (real) ----------------
+    with st.expander("Mi cuenta MEXC (real)", expanded=False):
+        if CLIENTE is None:
+            st.info("Para ver tu saldo real y activar el modo real, crea el archivo `.streamlit/secrets.toml` "
+                    "en tu computadora con tus llaves (instrucciones en el README). Nunca lo subas a GitHub.")
+        else:
+            cA, cB = st.columns([3, 1])
+            if cB.button("Probar conexión", help="Valida tus llaves con una orden de prueba que MEXC NO ejecuta."):
+                try:
+                    CLIENTE.probar_orden("BTCUSDT", 5)
+                    st.success("Conexión correcta: tus llaves y el permiso de órdenes funcionan. No se ejecutó ninguna operación.")
+                except mxc.ErrorMEXC as e:
+                    st.error(str(e))
+            try:
+                saldos = saldos_mexc(CLAVE, SECRETO)
+                try:
+                    pr_all, _ = precios_bot(tuple(f"{a}USDT" for a in saldos if a != "USDT"))
+                except mb.FuenteNoDisponible:
+                    pr_all = {}
+                filas = []
+                for activo, s_ in saldos.items():
+                    precio_u = 1.0 if activo == "USDT" else pr_all.get(f"{activo}USDT", np.nan)
+                    filas.append({"Activo": activo, "Disponible": s_["libre"], "En órdenes": s_["bloqueado"],
+                                  "Valor (USDT)": (s_["libre"] + s_["bloqueado"]) * precio_u})
+                tabla_s = pd.DataFrame(filas, columns=["Activo", "Disponible", "En órdenes", "Valor (USDT)"])
+                total = float(np.nansum(tabla_s["Valor (USDT)"])) if len(tabla_s) else 0.0
+                usdt_libre = saldos.get("USDT", {"libre": 0.0})["libre"]
+                m1, m2 = cA.columns(2)
+                m1.metric("Valor total de tu cuenta Spot", f"{total:,.2f} USDT")
+                m2.metric("USDT disponible", f"{usdt_libre:,.2f} USDT")
+                if len(tabla_s):
+                    st.dataframe(tabla_s, hide_index=True, width="stretch", column_config={
+                        "Disponible": st.column_config.NumberColumn(format="%.8g"),
+                        "En órdenes": st.column_config.NumberColumn(format="%.8g"),
+                        "Valor (USDT)": st.column_config.NumberColumn(format="%.2f")})
+                else:
+                    st.caption("Tu cuenta Spot no tiene saldo todavía. Deposita USDT en MEXC para usar el modo real.")
+                par_h = st.selectbox("Ver mis operaciones reales de", list(mb.PARES), key="mexc_hist_real")
+                ops_real = operaciones_mexc(CLAVE, SECRETO, par_h)
+                if ops_real:
+                    dfr = pd.DataFrame(ops_real)
+                    if "time" in dfr:
+                        dfr["time"] = pd.to_datetime(dfr["time"], unit="ms", utc=True).dt.tz_convert(mb.ZONA).dt.tz_localize(None)
+                    st.dataframe(dfr, hide_index=True, width="stretch")
+                else:
+                    st.caption(f"No tienes operaciones reales en {par_h}.")
+            except mxc.ErrorMEXC as e:
+                st.error(str(e))
 
     with st.expander("Configurar bot", expanded=est["bot"] is None):
         with st.form("form_mexc"):
@@ -619,17 +703,37 @@ with tab_bot:
             sl = d2.slider("Stop-loss: vender si pierde", 0.5, 20.0, 5.0, 0.5, format="%.1f%%")
             vel = d3.select_slider("Actualizar precios cada", options=[2, 5, 10, 30], value=5,
                                    format_func=lambda x: f"{x} segundos")
+            st.markdown('<div class="etiqueta-lateral">Modo real (dinero real en tu cuenta MEXC)</div>',
+                        unsafe_allow_html=True)
+            e1, e2, e3 = st.columns(3)
+            pedir_real = e1.toggle("Activar modo real", value=False, disabled=CLIENTE is None,
+                                   help="Requiere tus llaves en .streamlit/secrets.toml. Solo funciona en tu computadora.")
+            monto_real = e2.number_input("USDT por orden (modo real)", min_value=5.0, max_value=1_000.0, value=5.0, step=1.0)
+            tope_real = e3.number_input("Tope total a invertir (USDT)", min_value=5.0, max_value=10_000.0, value=50.0, step=5.0)
+            confirmacion = st.text_input("Para activar el modo real escribe: OPERAR CON DINERO REAL",
+                                         disabled=CLIENTE is None)
             arrancar = st.form_submit_button("Iniciar bot" if est["bot"] is None else "Reiniciar bot con esta configuración",
                                              type="primary")
         if arrancar:
             try:
                 pr, fuente = precios_bot(tuple(pares_sel))
-                est["bot"] = mb.bot_nuevo(pr, monto, tc / 100, tv / 100, sl / 100 if usar_sl else None)
+                if pedir_real:
+                    if confirmacion.strip().upper() != "OPERAR CON DINERO REAL":
+                        raise ValueError("Para activar el modo real escribe exactamente: OPERAR CON DINERO REAL")
+                    if fuente != "MEXC":
+                        raise ValueError("El modo real necesita conexión directa con MEXC (corre la app en tu computadora).")
+                    usdt = CLIENTE.saldo("USDT")
+                    if usdt < monto_real:
+                        raise ValueError(f"Tu cuenta Spot tiene {usdt:,.2f} USDT; necesitas al menos {monto_real:,.2f} USDT.")
+                    est["bot"] = mb.bot_nuevo(pr, monto_real, tc / 100, tv / 100, sl / 100 if usar_sl else None,
+                                              capital=min(tope_real, usdt), modo="real")
+                else:
+                    est["bot"] = mb.bot_nuevo(pr, monto, tc / 100, tv / 100, sl / 100 if usar_sl else None)
                 est["bot"].update({"fuente": fuente, "intervalo_s": vel})
                 st.session_state.mexc_corriendo = True
                 mb.guardar_estado(est)
                 st.rerun()
-            except (ValueError, mb.FuenteNoDisponible) as e:
+            except (ValueError, mb.FuenteNoDisponible, mxc.ErrorMEXC) as e:
                 st.error(str(e))
         st.caption("Modo paper: capital de práctica de 50,000 USDT con precios reales de MEXC. El bot opera mientras la app está abierta; "
                    "lo que hace se guarda y continúa cuando vuelves a abrirla.")
@@ -642,7 +746,21 @@ with tab_bot:
         if b2.button("Detener y cerrar posiciones"):
             pr, fuente = precios_bot(tuple(est["bot"]["activos"]))
             for par, a in est["bot"]["activos"].items():
-                if a["unidades"] > 0 and par in pr:
+                if a["unidades"] > 0 and par in pr and modo_real:
+                    try:
+                        res = CLIENTE.vender_mercado(par, a["unidades"])
+                        costo_v = a["monto"] * min(res["cantidad"] / a["unidades"], 1.0)
+                        est["bot"]["efectivo"] += res["total_usdt"]
+                        mb._registrar(est, {"bot_id": est["bot"]["id"], "fecha": mb.ahora().strftime("%Y-%m-%d %H:%M:%S"),
+                                            "par": par, "tipo": "venta", "motivo": "cierre manual", "precio": res["precio"],
+                                            "unidades": res["cantidad"], "monto_usdt": res["total_usdt"], "comision_usdt": None,
+                                            "ganancia_usdt": res["total_usdt"] - costo_v,
+                                            "ganancia_%": (res["total_usdt"] / costo_v - 1) * 100, "fuente": fuente,
+                                            "modo": "real", "estado": "Ejecutada", "order_id": res["order_id"]})
+                        a.update({"unidades": 0.0, "precio_compra": None, "monto": 0.0, "maximo_reciente": pr[par]})
+                    except mxc.ErrorMEXC as e:
+                        st.error(f"{par}: {e}")
+                elif a["unidades"] > 0 and par in pr:
                     bruto = a["unidades"] * pr[par]
                     comision = bruto * mb.COSTO
                     ganancia = bruto - comision - a["monto"]
@@ -651,7 +769,8 @@ with tab_bot:
                                         "par": par, "tipo": "venta", "motivo": "cierre manual", "precio": pr[par],
                                         "unidades": a["unidades"], "monto_usdt": bruto - comision,
                                         "comision_usdt": comision, "ganancia_usdt": ganancia,
-                                        "ganancia_%": ganancia / a["monto"] * 100, "fuente": fuente})
+                                        "ganancia_%": ganancia / a["monto"] * 100, "fuente": fuente,
+                                        "modo": "paper", "estado": "Ejecutada", "order_id": None})
                     a.update({"unidades": 0.0, "precio_compra": None, "monto": 0.0, "maximo_reciente": pr[par]})
             st.session_state.mexc_corriendo = False
             mb.guardar_estado(est)
@@ -667,9 +786,17 @@ with tab_bot:
             try:
                 pr, fuente = precios_bot(tuple(bot["activos"]))
                 if st.session_state.mexc_corriendo:
-                    for op in mb.bot_actualizar(est, pr, fuente):
-                        st.toast(f"{'Compra' if op['tipo'] == 'compra' else 'Venta'} de {op['par']} a {op['precio']:,.6g}"
-                                 + (f" · {op['ganancia_usdt']:+.2f} USDT" if op["ganancia_usdt"] is not None else ""))
+                    ejecutor = CLIENTE if bot.get("modo") == "real" else None
+                    if bot.get("modo") == "real" and (CLIENTE is None or fuente != "MEXC"):
+                        st.session_state.mexc_corriendo = False
+                        st.error("Modo real en pausa: no hay conexión directa con MEXC o faltan las llaves.")
+                    else:
+                        for op in mb.bot_actualizar(est, pr, fuente, ejecutor=ejecutor):
+                            if op.get("estado") == "Rechazada":
+                                st.toast(f"Orden rechazada en {op['par']}: {op['motivo']}")
+                            else:
+                                st.toast(f"{'Compra' if op['tipo'] == 'compra' else 'Venta'} de {op['par']} a {op['precio']:,.6g}"
+                                         + (f" · {op['ganancia_usdt']:+.2f} USDT" if op["ganancia_usdt"] is not None else ""))
                     mb.guardar_estado(est)
             except (mb.FuenteNoDisponible, KeyError, ValueError) as e:
                 fuente = "sin conexión"
@@ -688,7 +815,7 @@ with tab_bot:
             r = mb.resumen(bot)
             subseccion("Resumen de ganancias")
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Capital inicial (paper)", f"{r['capital']:,.2f} USDT")
+            k1.metric("Capital inicial (" + ("real" if bot.get("modo") == "real" else "paper") + ")", f"{r['capital']:,.2f} USDT")
             k2.metric("Equity total", f"{r['patrimonio']:,.2f} USDT", pct(r["rendimiento"]))
             k3.metric("Disponible", f"{r['efectivo']:,.2f} USDT",
                       f"{r['invertido']:,.2f} USDT en posiciones", delta_color="off")

@@ -8,6 +8,8 @@ mexc_bot.py — Bot de trading con PRECIOS REALES de MEXC y dinero de PRÁCTICA.
 - Tope de compra: compra cuando el precio cae X% desde su máximo reciente.
 - Tope de venta: vende cuando gana Y% sobre su precio de compra (toma de ganancia).
 - Stop-loss opcional (apagado por defecto).
+- MODO REAL (opcional, solo en tu computadora): las órdenes se envían a tu cuenta Spot de MEXC
+  a través de mexc_cuenta.ClienteMEXC, con un monto fijo por orden y un tope total.
 """
 import os
 import json
@@ -18,12 +20,15 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from mexc_cuenta import ErrorMEXC
+
 URL_MEXC = "https://api.mexc.com"
 CAPITAL_MEXC = 50_000.0
 COSTO = 0.001                     # 0.10% por compra y por venta (supuesto del proyecto)
 MONTO_MINIMO = 5.0                # USDT mínimos por orden
 TOPE_VENTA_MINIMO = 0.003         # 0.3%: cubre las dos comisiones y deja ganancia
 ZONA = "America/Mexico_City"
+ESPERA_TRAS_ERROR_MIN = 5          # minutos sin reintentar un par después de una orden rechazada
 
 PARES = {  # par de MEXC: ticker equivalente de Yahoo (respaldo)
     "BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD", "SOLUSDT": "SOL-USD", "BNBUSDT": "BNB-USD",
@@ -105,6 +110,9 @@ def _yahoo_minuto(tickers, intervalo="1m"):
 
 
 def precios_yahoo(pares):
+    pares = [p for p in pares if p in PARES]
+    if not pares:
+        return {}
     datos = _yahoo_minuto([PARES[p] for p in pares])
     inv = {v: k for k, v in PARES.items()}
     return {inv[t]: float(df["Close"].iloc[-1]) for t, df in datos.items()}
@@ -124,6 +132,8 @@ def velas_yahoo(par, intervalo="1m", limite=120):
 
 def obtener_precios(pares):
     """Devuelve (precios, fuente). Usa MEXC y, si falla, Yahoo Finance."""
+    if not pares:
+        return {}, "MEXC"
     try:
         return precios_mexc(pares), "MEXC"
     except FuenteNoDisponible:
@@ -164,7 +174,8 @@ def guardar_estado(est):
         pass   # en Streamlit Cloud el disco puede no persistir; el estado sigue en la sesión
 
 
-def bot_nuevo(precios, monto_operacion, tope_compra, tope_venta, stop_loss=None, capital=CAPITAL_MEXC):
+def bot_nuevo(precios, monto_operacion, tope_compra, tope_venta, stop_loss=None, capital=CAPITAL_MEXC,
+              modo="paper"):
     if not precios:
         raise ValueError("Elige al menos un par para el bot.")
     if tope_venta < TOPE_VENTA_MINIMO:
@@ -182,8 +193,8 @@ def bot_nuevo(precios, monto_operacion, tope_compra, tope_venta, stop_loss=None,
         "tope_compra": float(tope_compra), "tope_venta": float(tope_venta),
         "stop_loss": None if stop_loss is None else float(stop_loss),
         "activos": {p: {"ultimo": float(px), "maximo_reciente": float(px), "unidades": 0.0,
-                        "precio_compra": None, "monto": 0.0} for p, px in precios.items()},
-        "operaciones": [], "curva": [[t.isoformat(), float(capital)]], "fuente": "",
+                        "precio_compra": None, "monto": 0.0, "espera_hasta": None} for p, px in precios.items()},
+        "operaciones": [], "curva": [[t.isoformat(), float(capital)]], "fuente": "", "modo": modo,
     }
 
 
@@ -196,11 +207,28 @@ def patrimonio(bot):
     return bot["efectivo"] + sum(a["unidades"] * a["ultimo"] for a in bot["activos"].values())
 
 
-def bot_actualizar(est, precios, fuente="MEXC", costo=COSTO):
-    """Aplica los topes con los precios reales recibidos. Devuelve las operaciones nuevas."""
+def _en_espera(a, t):
+    return a.get("espera_hasta") is not None and t < pd.Timestamp(a["espera_hasta"])
+
+
+def _rechazo(est, bot, a, par, tipo, px, error, fuente, t):
+    a["espera_hasta"] = (t + pd.Timedelta(minutes=ESPERA_TRAS_ERROR_MIN)).isoformat()
+    op = {"bot_id": bot["id"], "fecha": t.strftime("%Y-%m-%d %H:%M:%S"), "par": par, "tipo": tipo,
+          "motivo": str(error), "precio": px, "unidades": 0.0, "monto_usdt": 0.0, "comision_usdt": None,
+          "ganancia_usdt": None, "ganancia_%": None, "fuente": fuente, "modo": bot.get("modo", "paper"),
+          "estado": "Rechazada", "order_id": None}
+    _registrar(est, op)
+    return op
+
+
+def bot_actualizar(est, precios, fuente="MEXC", costo=COSTO, ejecutor=None):
+    """Aplica los topes con los precios reales recibidos. Devuelve las operaciones nuevas.
+
+    ejecutor=None → modo paper (simulado). ejecutor=ClienteMEXC → modo real (órdenes en tu cuenta)."""
     bot = est["bot"]
     if bot is None:
         return []
+    real = bot.get("modo") == "real" and ejecutor is not None
     bot["fuente"] = fuente
     t = ahora()
     nuevas = []
@@ -209,20 +237,34 @@ def bot_actualizar(est, precios, fuente="MEXC", costo=COSTO):
             continue
         px = float(precios[par])
         a["ultimo"] = px
+        if _en_espera(a, t):
+            continue
         if a["unidades"] == 0:
             a["maximo_reciente"] = max(a["maximo_reciente"], px)
             nivel_compra = a["maximo_reciente"] * (1 - bot["tope_compra"])
             if px <= nivel_compra:
                 monto = min(bot["monto_operacion"], bot["efectivo"])
                 if monto >= MONTO_MINIMO:
-                    unidades = monto / (px * (1 + costo))
-                    comision = unidades * px * costo
-                    a.update({"unidades": unidades, "precio_compra": px, "monto": monto})
+                    order_id = None
+                    if real:
+                        try:
+                            res = ejecutor.comprar_mercado(par, monto)
+                        except ErrorMEXC as e:
+                            nuevas.append(_rechazo(est, bot, a, par, "compra", px, e, fuente, t))
+                            continue
+                        unidades, px_ejec, monto, comision = res["cantidad"], res["precio"], res["total_usdt"], None
+                        order_id = res["order_id"]
+                    else:
+                        unidades = monto / (px * (1 + costo))
+                        comision = unidades * px * costo
+                        px_ejec = px
+                    a.update({"unidades": unidades, "precio_compra": px_ejec, "monto": monto, "espera_hasta": None})
                     bot["efectivo"] -= monto
                     op = {"bot_id": bot["id"], "fecha": t.strftime("%Y-%m-%d %H:%M:%S"), "par": par, "tipo": "compra",
-                          "motivo": f"bajó {bot['tope_compra']:.2%} desde su máximo", "precio": px,
+                          "motivo": f"bajó {bot['tope_compra']:.2%} desde su máximo", "precio": px_ejec,
                           "unidades": unidades, "monto_usdt": monto, "comision_usdt": comision,
-                          "ganancia_usdt": None, "ganancia_%": None, "fuente": fuente}
+                          "ganancia_usdt": None, "ganancia_%": None, "fuente": fuente,
+                          "modo": "real" if real else "paper", "estado": "Ejecutada", "order_id": order_id}
                     _registrar(est, op)
                     nuevas.append(op)
         else:
@@ -234,15 +276,27 @@ def bot_actualizar(est, precios, fuente="MEXC", costo=COSTO):
             elif limite_perdida is not None and px <= limite_perdida:
                 motivo = f"stop-loss −{bot['stop_loss']:.2%}"
             if motivo:
-                bruto = a["unidades"] * px
-                comision = bruto * costo
-                neto = bruto - comision
-                ganancia = neto - a["monto"]
+                order_id = None
+                if real:
+                    try:
+                        res = ejecutor.vender_mercado(par, a["unidades"])
+                    except ErrorMEXC as e:
+                        nuevas.append(_rechazo(est, bot, a, par, "venta", px, e, fuente, t))
+                        continue
+                    neto, px_ejec, comision, order_id = res["total_usdt"], res["precio"], None, res["order_id"]
+                    vendidas = res["cantidad"]
+                    # MEXC redondea la cantidad al paso mínimo del par: el residuo pequeño queda en tu cuenta
+                    costo_vendido = a["monto"] * min(vendidas / a["unidades"], 1.0)
+                else:
+                    bruto = a["unidades"] * px
+                    comision = bruto * costo
+                    neto, px_ejec, vendidas, costo_vendido = bruto - comision, px, a["unidades"], a["monto"]
+                ganancia = neto - costo_vendido
                 bot["efectivo"] += neto
                 op = {"bot_id": bot["id"], "fecha": t.strftime("%Y-%m-%d %H:%M:%S"), "par": par, "tipo": "venta",
-                      "motivo": motivo, "precio": px, "unidades": a["unidades"], "monto_usdt": neto,
-                      "comision_usdt": comision, "ganancia_usdt": ganancia, "ganancia_%": ganancia / a["monto"] * 100,
-                      "fuente": fuente}
+                      "motivo": motivo, "precio": px_ejec, "unidades": vendidas, "monto_usdt": neto,
+                      "comision_usdt": comision, "ganancia_usdt": ganancia, "ganancia_%": ganancia / costo_vendido * 100,
+                      "fuente": fuente, "modo": "real" if real else "paper", "estado": "Ejecutada", "order_id": order_id}
                 _registrar(est, op)
                 nuevas.append(op)
                 a.update({"unidades": 0.0, "precio_compra": None, "monto": 0.0, "maximo_reciente": px})
@@ -265,8 +319,9 @@ def niveles(bot, par):
 
 
 def resumen(bot):
-    ventas = [o for o in bot["operaciones"] if o["tipo"] == "venta"]
-    compras = [o for o in bot["operaciones"] if o["tipo"] == "compra"]
+    ejecutadas = [o for o in bot["operaciones"] if o.get("estado", "Ejecutada") == "Ejecutada"]
+    ventas = [o for o in ejecutadas if o["tipo"] == "venta"]
+    compras = [o for o in ejecutadas if o["tipo"] == "compra"]
     realizada = float(sum(o["ganancia_usdt"] for o in ventas))
     no_realizada = float(sum(a["unidades"] * a["ultimo"] - a["monto"] for a in bot["activos"].values() if a["unidades"] > 0))
     pat = patrimonio(bot)
@@ -285,7 +340,8 @@ def resumen(bot):
         "capital": bot["capital"], "patrimonio": pat, "efectivo": bot["efectivo"],
         "invertido": pat - bot["efectivo"], "ganancia_realizada": realizada, "ganancia_no_realizada": no_realizada,
         "ganancia_total": pat - bot["capital"], "rendimiento": pat / bot["capital"] - 1,
-        "comisiones": float(sum(o["comision_usdt"] for o in bot["operaciones"])),
+        "comisiones": float(sum(o["comision_usdt"] or 0 for o in ejecutadas)),
+        "rechazadas": len(bot["operaciones"]) - len(ejecutadas),
         "compras": len(compras), "ventas": len(ventas),
         "ganadoras": sum(o["ganancia_usdt"] > 0 for o in ventas),
         "mejor": max((o["ganancia_usdt"] for o in ventas), default=None),
