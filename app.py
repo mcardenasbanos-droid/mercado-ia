@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 import nucleo as nc
+import mexc_bot as mb
 
 RUTA_LOGO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
 st.set_page_config(page_title="Investify · Pronóstico y trading con IA",
@@ -287,7 +288,7 @@ for t in TICKERS:
         precios_usd[t] = nc.precio_usd(float(precios[t]["cierre"].iloc[-1]), INFO.loc[t, "moneda_cotizada"], tasas)
 
 tab_mercado, tab_analisis, tab_trading, tab_bot, tab_te, tab_modelo = st.tabs(
-    ["Mercado", "Análisis", "Portafolio", "Bot demo", "Resultados", "Modelo"])
+    ["Mercado", "Análisis", "Portafolio", "Bot MEXC", "Resultados", "Modelo"])
 
 # ===========================================================================
 # 1. MERCADO
@@ -560,113 +561,236 @@ with tab_trading:
                "Los activos cotizados en otras monedas se convierten a USD con el tipo de cambio del último cierre.")
 
 # ===========================================================================
-# BOT DEMO (simulación con topes de compra y de venta)
+# BOT MEXC (precios reales de MEXC, dinero de práctica)
 # ===========================================================================
+@st.cache_data(ttl=2, show_spinner=False)
+def precios_bot(pares):
+    return mb.obtener_precios(list(pares))
+
+
+@st.cache_data(ttl=2, show_spinner=False)
+def velas_bot(par, intervalo):
+    return mb.obtener_velas(par, intervalo, 120)
+
+
+def tabla_operaciones(ops, alto=None):
+    df = pd.DataFrame(ops)
+    columnas = ["fecha", "par", "tipo", "motivo", "precio", "unidades", "monto_usdt", "comision_usdt",
+                "ganancia_usdt", "ganancia_%", "fuente", "bot_id"]
+    df = df[[c for c in columnas if c in df.columns]]
+    estilo = df.style.map(lambda v: "" if v is None or pd.isna(v) else ("color: #34d399" if v > 0 else "color: #fb7185"),
+                          subset=[c for c in ["ganancia_usdt", "ganancia_%"] if c in df.columns])
+    estilo = estilo.map(lambda v: "color: #34d399; font-weight: 700" if v == "compra" else "color: #fbbf24; font-weight: 700",
+                        subset=["tipo"])
+    kwargs = {"height": alto} if alto else {}
+    st.dataframe(estilo, hide_index=True, width="stretch", column_config={
+        "precio": st.column_config.NumberColumn(format="%.6g"),
+        "unidades": st.column_config.NumberColumn(format="%.6f"),
+        "monto_usdt": st.column_config.NumberColumn("monto (USDT)", format="%.2f"),
+        "comision_usdt": st.column_config.NumberColumn("comisión (USDT)", format="%.4f"),
+        "ganancia_usdt": st.column_config.NumberColumn("ganancia (USDT)", format="%+.2f"),
+        "ganancia_%": st.column_config.NumberColumn("ganancia", format="%+.2f%%"),
+        "bot_id": st.column_config.TextColumn("sesión del bot")}, **kwargs)
+
+
 with tab_bot:
-    seccion("Bot de trading", "Modo demostración con topes de compra y de venta")
-    st.warning("**DEMO con precios simulados.** Los precios se mueven al azar alrededor del último precio real de cada "
-               "activo. El bot compra cuando el precio baja hasta el **tope de compra** y vende solo cuando sube hasta "
-               "el **tope de venta**, así que cada operación cerrada termina en ganancia. **No es el rendimiento de los "
-               "modelos ni dinero real**: los resultados reales están en la pestaña «Resultados en TE».")
+    seccion("Bot de trading · MEXC", "Precios reales de MEXC en tiempo real · capital de práctica de 10,000 USDT · "
+                                     "no se envían órdenes reales")
+    if "mexc" not in st.session_state:
+        st.session_state.mexc = mb.cargar_estado()
+        st.session_state.mexc_corriendo = st.session_state.mexc["bot"] is not None
+    est = st.session_state.mexc
 
-    if "bot" not in st.session_state:
-        st.session_state.bot, st.session_state.bot_corriendo = None, False
+    with st.expander("Configurar bot", expanded=est["bot"] is None):
+        with st.form("form_mexc"):
+            pares_sel = st.multiselect("Pares de MEXC", list(mb.PARES), default=list(mb.PARES))
+            c1, c2, c3 = st.columns(3)
+            monto = c1.number_input("Monto por operación (USDT)", min_value=mb.MONTO_MINIMO,
+                                    max_value=mb.CAPITAL_MEXC, value=1_000.0, step=100.0)
+            tc = c2.slider("Tope de compra: comprar si baja desde su máximo", 0.2, 5.0, 0.5, 0.1, format="%.1f%%")
+            tv = c3.slider("Tope de venta: vender al ganar", 0.3, 5.0, 0.8, 0.1, format="%.1f%%")
+            d1, d2, d3 = st.columns(3)
+            usar_sl = d1.toggle("Usar stop-loss", value=False,
+                                help="Apagado: el bot solo vende con ganancia, pero una compra puede quedarse abierta en pérdida.")
+            sl = d2.slider("Stop-loss: vender si pierde", 0.5, 20.0, 5.0, 0.5, format="%.1f%%")
+            vel = d3.select_slider("Actualizar precios cada", options=[2, 5, 10, 30], value=5,
+                                   format_func=lambda x: f"{x} segundos")
+            arrancar = st.form_submit_button("Iniciar bot" if est["bot"] is None else "Reiniciar bot con esta configuración",
+                                             type="primary")
+        if arrancar:
+            try:
+                pr, fuente = precios_bot(tuple(pares_sel))
+                est["bot"] = mb.bot_nuevo(pr, monto, tc / 100, tv / 100, sl / 100 if usar_sl else None)
+                est["bot"].update({"fuente": fuente, "intervalo_s": vel})
+                st.session_state.mexc_corriendo = True
+                mb.guardar_estado(est)
+                st.rerun()
+            except (ValueError, mb.FuenteNoDisponible) as e:
+                st.error(str(e))
+        st.caption("El capital de práctica es de 10,000 USDT. El bot opera mientras la app está abierta en el navegador; "
+                   "lo que hace se guarda y continúa cuando vuelves a abrirla.")
 
-    operables_bot = [t for t in TICKERS if t in precios_usd and t not in nc.SOLO_ANALISIS]
-    por_defecto = [t for t in ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"] if t in operables_bot]
-    with st.form("form_bot"):
-        f1, f2, f3 = st.columns(3)
-        activos_bot = f1.multiselect("Activos del bot", operables_bot, default=por_defecto, max_selections=8)
-        capital_bot = f2.number_input("Capital inicial (USD)", min_value=1_000.0, value=100_000.0, step=5_000.0)
-        monto_bot = f3.number_input("Monto por operación (USD)", min_value=100.0, value=10_000.0, step=1_000.0)
-        g1, g2, g3 = st.columns(3)
-        tope_compra = g1.slider("Tope de compra: comprar si el precio baja", 0.5, 5.0, 1.5, 0.5, format="%.1f%%")
-        tope_venta = g2.slider("Tope de venta: vender al ganar", 0.5, 5.0, 2.0, 0.5, format="%.1f%%")
-        velocidad = g3.select_slider("Velocidad", options=["Lenta", "Normal", "Rápida"], value="Normal")
-        iniciar = st.form_submit_button("Iniciar bot", type="primary")
-    if iniciar:
-        try:
-            st.session_state.bot = nc.bot_nuevo({t: precios_usd[t] for t in activos_bot}, capital_bot, monto_bot,
-                                                tope_compra / 100, tope_venta / 100)
-            st.session_state.bot_corriendo = True
-            st.session_state.bot_velocidad = velocidad
-        except ValueError as e:
-            st.error(str(e))
-
-    b1, b2, _ = st.columns([1, 1, 4])
-    if st.session_state.bot is not None:
-        if b1.button("Pausar" if st.session_state.bot_corriendo else "Reanudar"):
-            st.session_state.bot_corriendo = not st.session_state.bot_corriendo
+    if est["bot"] is not None:
+        b1, b2, _ = st.columns([1, 1, 4])
+        if b1.button("Pausar bot" if st.session_state.mexc_corriendo else "Reanudar bot"):
+            st.session_state.mexc_corriendo = not st.session_state.mexc_corriendo
             st.rerun()
-        if b2.button("Reiniciar"):
-            st.session_state.bot, st.session_state.bot_corriendo = None, False
+        if b2.button("Detener y cerrar posiciones"):
+            pr, fuente = precios_bot(tuple(est["bot"]["activos"]))
+            for par, a in est["bot"]["activos"].items():
+                if a["unidades"] > 0 and par in pr:
+                    bruto = a["unidades"] * pr[par]
+                    comision = bruto * mb.COSTO
+                    ganancia = bruto - comision - a["monto"]
+                    est["bot"]["efectivo"] += bruto - comision
+                    mb._registrar(est, {"bot_id": est["bot"]["id"], "fecha": mb.ahora().strftime("%Y-%m-%d %H:%M:%S"),
+                                        "par": par, "tipo": "venta", "motivo": "cierre manual", "precio": pr[par],
+                                        "unidades": a["unidades"], "monto_usdt": bruto - comision,
+                                        "comision_usdt": comision, "ganancia_usdt": ganancia,
+                                        "ganancia_%": ganancia / a["monto"] * 100, "fuente": fuente})
+                    a.update({"unidades": 0.0, "precio_compra": None, "monto": 0.0, "maximo_reciente": pr[par]})
+            st.session_state.mexc_corriendo = False
+            mb.guardar_estado(est)
             st.rerun()
 
-    intervalo = {"Lenta": 2.0, "Normal": 1.0, "Rápida": 0.5}.get(st.session_state.get("bot_velocidad", "Normal"), 1.0)
+    intervalo_s = (est["bot"] or {}).get("intervalo_s", 5)
 
-    @st.fragment(run_every=intervalo if st.session_state.bot_corriendo else None)
-    def panel_bot():
-        bot = st.session_state.bot
-        if bot is None:
-            st.info("Configura los topes y presiona **Iniciar bot**.")
-            return
-        if st.session_state.bot_corriendo:
-            for _ in range(3):                      # 3 movimientos de mercado por actualización
-                nc.bot_paso(bot)
-        r = nc.bot_resumen(bot)
-        estado = "● Operando" if st.session_state.bot_corriendo else "En pausa"
-        st.caption(f"{estado} · tick {bot['t']} · tope de compra −{bot['tope_compra']:.1%} · "
-                   f"tope de venta +{bot['tope_venta']:.1%} · comisión 0.10% por operación")
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Ganancia realizada", f"${r['ganancia_realizada']:,.2f}",
-                  pct(r["ganancia_realizada"] / bot["capital"]))
-        k2.metric("Patrimonio", f"${r['patrimonio']:,.2f}", pct(r["patrimonio"] / bot["capital"] - 1))
-        k3.metric("Efectivo", f"${r['efectivo']:,.2f}")
-        k4.metric("Operaciones cerradas", r["operaciones_cerradas"],
-                  f"{r['operaciones_ganadoras']} con ganancia", delta_color="off")
-        k5.metric("Comisiones", f"${r['comisiones']:,.2f}")
+    @st.fragment(run_every=intervalo_s if (est["bot"] is not None and st.session_state.mexc_corriendo) else None)
+    def panel_mexc():
+        est = st.session_state.mexc
+        bot = est["bot"]
+        if bot is not None:
+            try:
+                pr, fuente = precios_bot(tuple(bot["activos"]))
+                if st.session_state.mexc_corriendo:
+                    for op in mb.bot_actualizar(est, pr, fuente):
+                        st.toast(f"{'Compra' if op['tipo'] == 'compra' else 'Venta'} de {op['par']} a {op['precio']:,.6g}"
+                                 + (f" · {op['ganancia_usdt']:+.2f} USDT" if op["ganancia_usdt"] is not None else ""))
+                    mb.guardar_estado(est)
+            except (mb.FuenteNoDisponible, KeyError, ValueError) as e:
+                fuente = "sin conexión"
+                st.error(f"No se pudieron obtener precios: {e}")
 
-        g_izq, g_der = st.columns([2.2, 1])
-        with g_izq:
-            ver = st.selectbox("Ver activo", list(bot["activos"].keys()), key="bot_ver")
-            a = bot["activos"][ver]
-            ticks, valores = zip(*a["historia"])
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=list(ticks), y=list(valores), name="Precio simulado", line=dict(color=AZUL, width=2)))
-            ops = [o for o in bot["operaciones"] if o["ticker"] == ver and o["tick"] >= ticks[0]]
-            compras, ventas = [o for o in ops if o["tipo"] == "compra"], [o for o in ops if o["tipo"] == "venta"]
-            if compras:
-                fig.add_trace(go.Scatter(x=[o["tick"] for o in compras], y=[o["precio"] for o in compras], mode="markers",
-                                         name="Compra", marker=dict(symbol="triangle-up", size=13, color=VERDE)))
-            if ventas:
-                fig.add_trace(go.Scatter(x=[o["tick"] for o in ventas], y=[o["precio"] for o in ventas], mode="markers",
-                                         name="Venta con ganancia", marker=dict(symbol="triangle-down", size=13, color=NARANJA)))
-            fig.add_hline(y=a["referencia_compra"], line_dash="dot", line_color=VERDE, annotation_text="tope de compra")
-            if a["precio_compra"] is not None:
-                fig.add_hline(y=a["precio_compra"] * (1 + bot["tope_venta"]), line_dash="dot", line_color=NARANJA,
-                              annotation_text="tope de venta")
-            fig.update_layout(xaxis_title="tick (movimiento del mercado simulado)", yaxis_title="Precio (USD)")
-            st.plotly_chart(layout_grafica(fig, 380), width="stretch")
-        with g_der:
-            st.markdown("**Posiciones abiertas** (esperando el tope de venta)")
+            estado_txt = "● En vivo" if st.session_state.mexc_corriendo else "En pausa"
+            st.caption(f"{estado_txt} · Fuente: {fuente} · actualizado {mb.ahora():%H:%M:%S} · cada {intervalo_s} s · "
+                       f"tope de compra −{bot['tope_compra']:.1%} · tope de venta +{bot['tope_venta']:.1%} · "
+                       f"stop-loss {'−' + format(bot['stop_loss'], '.1%') if bot['stop_loss'] else 'apagado'}")
+            if fuente.startswith("Yahoo"):
+                st.warning("MEXC no está disponible desde este servidor (MEXC no opera en EE. UU., donde está Streamlit Cloud). "
+                           "Se usan precios de Yahoo Finance con hasta 1 minuto de retraso. Para precios de MEXC en tiempo real, "
+                           "corre la app en tu computadora.")
+
+            # ---------------- Resumen de ganancias ----------------
+            r = mb.resumen(bot)
+            subseccion("Resumen de ganancias")
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Capital inicial", f"{r['capital']:,.2f} USDT")
+            k2.metric("Patrimonio actual", f"{r['patrimonio']:,.2f} USDT", pct(r["rendimiento"]))
+            k3.metric("Ganancia realizada", f"{r['ganancia_realizada']:+,.2f} USDT",
+                      f"{r['ganadoras']} de {r['ventas']} ventas con ganancia", delta_color="off")
+            k4.metric("Ganancia no realizada", f"{r['ganancia_no_realizada']:+,.2f} USDT",
+                      f"{len(r['abiertas'])} posiciones abiertas", delta_color="off")
+            k5, k6, k7, k8 = st.columns(4)
+            k5.metric("Ganancia total", f"{r['ganancia_total']:+,.2f} USDT", pct(r["rendimiento"]))
+            k6.metric("Operaciones", f"{r['compras']} compras · {r['ventas']} ventas")
+            k7.metric("Comisiones pagadas", f"{r['comisiones']:,.2f} USDT")
+            horas, minutos = divmod(int(r["minutos"]), 60)
+            k8.metric("Tiempo activo", f"{horas} h {minutos} min",
+                      f"mejor venta {r['mejor']:+.2f} USDT" if r["mejor"] is not None else None, delta_color="off")
+
+            g1, g2 = st.columns([1.6, 1])
+            with g1:
+                curva = pd.DataFrame(bot["curva"], columns=["tiempo", "patrimonio"])
+                curva["tiempo"] = pd.to_datetime(curva["tiempo"])
+                fig = go.Figure(go.Scatter(x=curva.tiempo, y=curva.patrimonio, name="Patrimonio", fill="tozeroy",
+                                           line=dict(color=TURQUESA, width=2), fillcolor="rgba(20,184,166,0.10)"))
+                fig.add_hline(y=r["capital"], line_dash="dot", line_color=GRIS, annotation_text="capital inicial")
+                fig.update_yaxes(range=[curva.patrimonio.min() * 0.995, curva.patrimonio.max() * 1.005])
+                fig.update_layout(title=dict(text="Patrimonio del bot (USDT)", font=dict(size=13)))
+                st.plotly_chart(layout_grafica(fig, 280), width="stretch")
+            with g2:
+                pp = r["por_par"]
+                fig = go.Figure(go.Bar(x=pp["par"] if len(pp) else [], y=pp["ganancia_usdt"] if len(pp) else [],
+                                       marker_color=[VERDE if v >= 0 else ROJO for v in (pp["ganancia_usdt"] if len(pp) else [])]))
+                fig.update_layout(title=dict(text="Ganancia realizada por par (USDT)", font=dict(size=13)))
+                st.plotly_chart(layout_grafica(fig, 280), width="stretch")
+
+            # ---------------- Gráfica en tiempo real ----------------
+            subseccion("Gráfica en tiempo real")
+            s1, s2 = st.columns([2, 1])
+            par_ver = s1.selectbox("Par", list(bot["activos"]), key="mexc_par")
+            int_lbl = s2.selectbox("Velas de", list(mb.INTERVALOS), key="mexc_int")
+            try:
+                velas, fuente_v = velas_bot(par_ver, mb.INTERVALOS[int_lbl])
+                fig = go.Figure(go.Candlestick(x=velas.tiempo, open=velas.apertura, high=velas.maximo, low=velas.minimo,
+                                               close=velas.cierre, name=par_ver, increasing_line_color=VERDE,
+                                               decreasing_line_color=ROJO))
+                desde = velas.tiempo.min()
+                ops_par = [o for o in bot["operaciones"] if o["par"] == par_ver and pd.Timestamp(o["fecha"]) >= desde]
+                for tipo, simbolo, color, nombre in (("compra", "triangle-up", VERDE, "Compra del bot"),
+                                                     ("venta", "triangle-down", NARANJA, "Venta del bot")):
+                    sub = [o for o in ops_par if o["tipo"] == tipo]
+                    if sub:
+                        fig.add_trace(go.Scatter(x=[pd.Timestamp(o["fecha"]) for o in sub], y=[o["precio"] for o in sub],
+                                                 mode="markers", name=nombre,
+                                                 marker=dict(symbol=simbolo, size=14, color=color, line=dict(width=1, color="#0b1220"))))
+                nv = mb.niveles(bot, par_ver)
+                if nv["compra"]:
+                    fig.add_hline(y=nv["compra"], line_dash="dot", line_color=VERDE, annotation_text="tope de compra")
+                if nv["venta"]:
+                    fig.add_hline(y=nv["venta"], line_dash="dot", line_color=NARANJA, annotation_text="tope de venta")
+                    fig.add_hline(y=nv["precio_compra"], line_dash="dash", line_color=GRIS, annotation_text="precio de compra")
+                if nv["stop"]:
+                    fig.add_hline(y=nv["stop"], line_dash="dot", line_color=ROJO, annotation_text="stop-loss")
+                fig.update_layout(xaxis_rangeslider_visible=False, yaxis_title="USDT",
+                                  title=dict(text=f"{par_ver} · último {bot['activos'][par_ver]['ultimo']:,.6g} USDT · {fuente_v}",
+                                             font=dict(size=13)))
+                st.plotly_chart(layout_grafica(fig, 440), width="stretch")
+            except (mb.FuenteNoDisponible, KeyError, ValueError) as e:
+                st.error(f"No se pudo cargar la gráfica: {e}")
+
+            # ---------------- Posiciones y últimas operaciones ----------------
+            subseccion("Posiciones abiertas")
             if len(r["abiertas"]):
                 st.dataframe(r["abiertas"], hide_index=True, width="stretch", column_config={
-                    "precio_compra": st.column_config.NumberColumn("compra", format="$%.2f"),
-                    "precio_actual": st.column_config.NumberColumn("actual", format="$%.2f"),
-                    "objetivo_venta": st.column_config.NumberColumn("objetivo", format="$%.2f"),
-                    "variacion_%": st.column_config.NumberColumn("var.", format="%+.2f%%")})
+                    "precio_compra": st.column_config.NumberColumn("compra", format="%.6g"),
+                    "precio_actual": st.column_config.NumberColumn("actual", format="%.6g"),
+                    "objetivo_venta": st.column_config.NumberColumn("tope de venta", format="%.6g"),
+                    "invertido_usdt": st.column_config.NumberColumn("invertido (USDT)", format="%.2f"),
+                    "valor_usdt": st.column_config.NumberColumn("valor (USDT)", format="%.2f"),
+                    "resultado_%": st.column_config.NumberColumn("resultado", format="%+.2f%%")})
             else:
-                st.caption("Sin posiciones abiertas: esperando que algún precio baje al tope de compra.")
-        if bot["operaciones"]:
-            st.markdown("**Últimas operaciones**")
-            st.dataframe(pd.DataFrame(bot["operaciones"][-15:][::-1]), hide_index=True, width="stretch", column_config={
-                "precio": st.column_config.NumberColumn(format="$%.2f"),
-                "unidades": st.column_config.NumberColumn(format="%.4f"),
-                "monto_usd": st.column_config.NumberColumn(format="$%.2f"),
-                "comision_usd": st.column_config.NumberColumn(format="$%.2f"),
-                "ganancia_usd": st.column_config.NumberColumn(format="$%+.2f")})
+                st.caption("Sin posiciones abiertas: el bot espera que algún precio baje hasta su tope de compra.")
 
-    panel_bot()
+            subseccion("Últimas operaciones")
+            if bot["operaciones"]:
+                tabla_operaciones(bot["operaciones"][-15:][::-1])
+            else:
+                st.caption("Todavía no hay operaciones en esta sesión del bot.")
+        else:
+            st.info("Configura el bot y presiona **Iniciar bot**.")
+
+        # ---------------- Movimientos históricos ----------------
+        subseccion("Movimientos históricos")
+        if est["historial"]:
+            hist = est["historial"][::-1]
+            st.caption(f"{len(hist)} movimientos de todas las sesiones del bot, del más reciente al más antiguo.")
+            tabla_operaciones(hist, alto=420)
+            st.download_button("Descargar historial (CSV)", pd.DataFrame(hist).to_csv(index=False).encode("utf-8"),
+                               file_name="movimientos_bot_mexc.csv", mime="text/csv")
+        else:
+            st.caption("El historial aparecerá aquí cuando el bot haga su primera operación.")
+
+    panel_mexc()
+
+    with st.expander("Opciones avanzadas"):
+        st.caption("Borra el historial guardado de todas las sesiones del bot. No se puede deshacer.")
+        if st.button("Borrar historial de movimientos"):
+            est["historial"] = []
+            if est["bot"] is not None:
+                est["bot"]["operaciones"] = []
+            mb.guardar_estado(est)
+            st.rerun()
 
 # ===========================================================================
 # 4. RESULTADOS EN TE (backtest del Notebook 5)
