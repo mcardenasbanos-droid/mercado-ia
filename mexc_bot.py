@@ -4,7 +4,7 @@ mexc_bot.py — Bot de trading con PRECIOS REALES de MEXC y dinero de PRÁCTICA.
 - Precios y velas en tiempo real desde la API pública de MEXC (no requiere llaves).
 - Si MEXC no responde (por ejemplo, desde servidores en EE. UU., donde MEXC no opera),
   se usa Yahoo Finance como respaldo y se indica en la app.
-- Capital de práctica: 10,000 USDT. No se envían órdenes reales.
+- Capital de práctica (modo paper): 50,000 USDT. No se envían órdenes reales.
 - Tope de compra: compra cuando el precio cae X% desde su máximo reciente.
 - Tope de venta: vende cuando gana Y% sobre su precio de compra (toma de ganancia).
 - Stop-loss opcional (apagado por defecto).
@@ -19,7 +19,7 @@ import requests
 import yfinance as yf
 
 URL_MEXC = "https://api.mexc.com"
-CAPITAL_MEXC = 10_000.0
+CAPITAL_MEXC = 50_000.0
 COSTO = 0.001                     # 0.10% por compra y por venta (supuesto del proyecto)
 MONTO_MINIMO = 5.0                # USDT mínimos por orden
 TOPE_VENTA_MINIMO = 0.003         # 0.3%: cubre las dos comisiones y deja ganancia

@@ -575,27 +575,31 @@ def velas_bot(par, intervalo):
 
 def tabla_operaciones(ops, alto=None):
     df = pd.DataFrame(ops)
-    columnas = ["fecha", "par", "tipo", "motivo", "precio", "unidades", "monto_usdt", "comision_usdt",
-                "ganancia_usdt", "ganancia_%", "fuente", "bot_id"]
-    df = df[[c for c in columnas if c in df.columns]]
-    estilo = df.style.map(lambda v: "" if v is None or pd.isna(v) else ("color: #34d399" if v > 0 else "color: #fb7185"),
-                          subset=[c for c in ["ganancia_usdt", "ganancia_%"] if c in df.columns])
-    estilo = estilo.map(lambda v: "color: #34d399; font-weight: 700" if v == "compra" else "color: #fbbf24; font-weight: 700",
-                        subset=["tipo"])
+    tabla = pd.DataFrame({
+        "Fecha": df["fecha"], "Par": df["par"],
+        "Dirección": df["tipo"].map({"compra": "Comprar", "venta": "Vender"}),
+        "Tipo de orden": "Mercado", "Precio ejecutado": df["precio"], "Cantidad": df["unidades"],
+        "Monto (USDT)": df["monto_usdt"], "PNL (USDT)": df["ganancia_usdt"], "PNL %": df["ganancia_%"],
+        "Comisión (USDT)": df["comision_usdt"], "Estado": "Ejecutada", "Motivo": df["motivo"],
+        "Fuente de precio": df.get("fuente", ""), "Sesión del bot": df.get("bot_id", ""),
+    })
+    estilo = tabla.style.map(lambda v: "" if v is None or pd.isna(v) else ("color: #34d399" if v > 0 else "color: #fb7185"),
+                             subset=["PNL (USDT)", "PNL %"])
+    estilo = estilo.map(lambda v: "color: #34d399; font-weight: 700" if v == "Comprar" else "color: #fb7185; font-weight: 700",
+                        subset=["Dirección"])
     kwargs = {"height": alto} if alto else {}
     st.dataframe(estilo, hide_index=True, width="stretch", column_config={
-        "precio": st.column_config.NumberColumn(format="%.6g"),
-        "unidades": st.column_config.NumberColumn(format="%.6f"),
-        "monto_usdt": st.column_config.NumberColumn("monto (USDT)", format="%.2f"),
-        "comision_usdt": st.column_config.NumberColumn("comisión (USDT)", format="%.4f"),
-        "ganancia_usdt": st.column_config.NumberColumn("ganancia (USDT)", format="%+.2f"),
-        "ganancia_%": st.column_config.NumberColumn("ganancia", format="%+.2f%%"),
-        "bot_id": st.column_config.TextColumn("sesión del bot")}, **kwargs)
+        "Precio ejecutado": st.column_config.NumberColumn(format="%.6g"),
+        "Cantidad": st.column_config.NumberColumn(format="%.6f"),
+        "Monto (USDT)": st.column_config.NumberColumn(format="%.2f"),
+        "PNL (USDT)": st.column_config.NumberColumn(format="%+.2f"),
+        "PNL %": st.column_config.NumberColumn(format="%+.2f%%"),
+        "Comisión (USDT)": st.column_config.NumberColumn(format="%.4f")}, **kwargs)
 
 
 with tab_bot:
-    seccion("Bot de trading · MEXC", "Precios reales de MEXC en tiempo real · capital de práctica de 10,000 USDT · "
-                                     "no se envían órdenes reales")
+    seccion("Bot de trading · MEXC (modo paper)", "Precios reales de MEXC en tiempo real · capital de práctica de "
+                                                  "50,000 USDT · no se envían órdenes reales a MEXC")
     if "mexc" not in st.session_state:
         st.session_state.mexc = mb.cargar_estado()
         st.session_state.mexc_corriendo = st.session_state.mexc["bot"] is not None
@@ -606,7 +610,7 @@ with tab_bot:
             pares_sel = st.multiselect("Pares de MEXC", list(mb.PARES), default=list(mb.PARES))
             c1, c2, c3 = st.columns(3)
             monto = c1.number_input("Monto por operación (USDT)", min_value=mb.MONTO_MINIMO,
-                                    max_value=mb.CAPITAL_MEXC, value=1_000.0, step=100.0)
+                                    max_value=mb.CAPITAL_MEXC, value=5_000.0, step=500.0)
             tc = c2.slider("Tope de compra: comprar si baja desde su máximo", 0.2, 5.0, 0.5, 0.1, format="%.1f%%")
             tv = c3.slider("Tope de venta: vender al ganar", 0.3, 5.0, 0.8, 0.1, format="%.1f%%")
             d1, d2, d3 = st.columns(3)
@@ -627,7 +631,7 @@ with tab_bot:
                 st.rerun()
             except (ValueError, mb.FuenteNoDisponible) as e:
                 st.error(str(e))
-        st.caption("El capital de práctica es de 10,000 USDT. El bot opera mientras la app está abierta en el navegador; "
+        st.caption("Modo paper: capital de práctica de 50,000 USDT con precios reales de MEXC. El bot opera mientras la app está abierta; "
                    "lo que hace se guarda y continúa cuando vuelves a abrirla.")
 
     if est["bot"] is not None:
@@ -684,19 +688,20 @@ with tab_bot:
             r = mb.resumen(bot)
             subseccion("Resumen de ganancias")
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Capital inicial", f"{r['capital']:,.2f} USDT")
-            k2.metric("Patrimonio actual", f"{r['patrimonio']:,.2f} USDT", pct(r["rendimiento"]))
-            k3.metric("Ganancia realizada", f"{r['ganancia_realizada']:+,.2f} USDT",
-                      f"{r['ganadoras']} de {r['ventas']} ventas con ganancia", delta_color="off")
-            k4.metric("Ganancia no realizada", f"{r['ganancia_no_realizada']:+,.2f} USDT",
+            k1.metric("Capital inicial (paper)", f"{r['capital']:,.2f} USDT")
+            k2.metric("Equity total", f"{r['patrimonio']:,.2f} USDT", pct(r["rendimiento"]))
+            k3.metric("Disponible", f"{r['efectivo']:,.2f} USDT",
+                      f"{r['invertido']:,.2f} USDT en posiciones", delta_color="off")
+            k4.metric("PNL no realizado", f"{r['ganancia_no_realizada']:+,.2f} USDT",
                       f"{len(r['abiertas'])} posiciones abiertas", delta_color="off")
             k5, k6, k7, k8 = st.columns(4)
-            k5.metric("Ganancia total", f"{r['ganancia_total']:+,.2f} USDT", pct(r["rendimiento"]))
-            k6.metric("Operaciones", f"{r['compras']} compras · {r['ventas']} ventas")
+            k5.metric("PNL realizado", f"{r['ganancia_realizada']:+,.2f} USDT",
+                      f"{r['ganadoras']} de {r['ventas']} ventas con ganancia", delta_color="off")
+            k6.metric("Ganancia total", f"{r['ganancia_total']:+,.2f} USDT", pct(r["rendimiento"]))
             k7.metric("Comisiones pagadas", f"{r['comisiones']:,.2f} USDT")
             horas, minutos = divmod(int(r["minutos"]), 60)
-            k8.metric("Tiempo activo", f"{horas} h {minutos} min",
-                      f"mejor venta {r['mejor']:+.2f} USDT" if r["mejor"] is not None else None, delta_color="off")
+            k8.metric("Operaciones", f"{r['compras']} compras · {r['ventas']} ventas",
+                      f"activo {horas} h {minutos} min", delta_color="off")
 
             g1, g2 = st.columns([1.6, 1])
             with g1:
