@@ -626,7 +626,16 @@ def cerrar_posiciones(est):
     mb.guardar_estado(est)
 
 
+EN_NUBE = BASE_DIR.replace("\\", "/").startswith("/mount/src") or bool(os.environ.get("STREAMLIT_SHARING_MODE"))
+
+
 def panel_cuenta_mexc():
+    if CLIENTE is None and EN_NUBE:
+        html(ui.aviso("🔒 <b>Cuenta MEXC: disponible solo en la versión local.</b> Por seguridad, las llaves de MEXC nunca se "
+                      "guardan en esta página pública, y además MEXC no permite conexiones desde los servidores de "
+                      "Streamlit Cloud (EE. UU.). Aquí el bot opera en modo paper con precios de respaldo; en la computadora "
+                      "usa precios en vivo de MEXC y puede mostrar el saldo real de la cuenta."))
+        return
     if CLIENTE is None:
         html(ui.aviso("Para ver tu saldo real y activar el modo real, crea el archivo <code>.streamlit/secrets.toml</code> en tu "
                       "computadora con tus llaves (instrucciones en el README). Nunca lo subas a GitHub."))
