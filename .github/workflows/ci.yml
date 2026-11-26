@@ -8,9 +8,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Instalar dependencias (sin TensorFlow: las pruebas no lo necesitan)
+      - name: "Instalar dependencias (sin TensorFlow, las pruebas no lo necesitan)"
         run: pip install pandas numpy requests yfinance plotly openpyxl pytest
-      - name: Compilar todos los módulos
+      - name: "Compilar todos los modulos"
         run: python -m compileall -q .
-      - name: Pruebas
+      - name: "Pruebas"
         run: python -m pytest tests -q
