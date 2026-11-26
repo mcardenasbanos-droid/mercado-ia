@@ -211,10 +211,10 @@ header[data-testid="stHeader"] {{background: transparent; height: 0;}}
 
 /* Franja de indicadores */
 .x-strip {{display: grid; gap: 1px; background: {BORDE}; border: 1px solid {BORDE}; border-radius: 10px; overflow: hidden;}}
-.x-k {{background: {PANEL}; padding: 12px 18px;}}
-.x-k small {{display: block; color: {TENUE}; font-size: .72rem; margin-bottom: 4px; font-weight: 500;}}
-.x-k b {{font-size: 1.12rem; font-weight: 700; color: {TEXTO}; font-variant-numeric: tabular-nums; letter-spacing: -.01em;}}
-.x-k em {{display: block; font-style: normal; color: {TENUE2}; font-size: .72rem; margin-top: 3px;}}
+.x-k {{background: {PANEL}; padding: 16px 22px;}}
+.x-k small {{display: block; color: {TENUE}; font-size: .85rem; margin-bottom: 6px; font-weight: 500;}}
+.x-k b {{font-size: 1.6rem; font-weight: 700; color: {TEXTO}; font-variant-numeric: tabular-nums; letter-spacing: -.01em;}}
+.x-k em {{display: block; font-style: normal; color: {TENUE2}; font-size: .82rem; margin-top: 4px;}}
 
 /* Barra del par */
 .x-pair {{display: flex; align-items: center; gap: 34px; padding: 12px 18px; background: {PANEL}; border: 1px solid {BORDE};
