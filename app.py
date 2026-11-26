@@ -5,6 +5,7 @@ Proyecto final · Deep Learning para Finanzas
 Ejecutar:  streamlit run app.py
 """
 import os
+import json
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,9 @@ import mexc_cuenta as mxc
 import polymarket_bot as pb
 import polymarket_real as pr
 import notificaciones as wa
+import riesgo as rg
+import agentes as ag
+import exportar
 import ui
 from ui import VERDE, ROJO, AMARILLO, TENUE, TEXTO, BORDE, PANEL, INDIGO, TURQUESA
 
@@ -173,6 +177,26 @@ def precios_bot(pares):
 @st.cache_data(ttl=2, show_spinner=False)
 def velas_bot(par, intervalo):
     return mb.obtener_velas(par, intervalo, 120)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def contexto_par(par):
+    """Velas CERRADAS de 15 min → ATR, RSI, MACD y SMA 20 para los agentes y el riesgo."""
+    try:
+        v, _ = mb.obtener_velas(par, "15m", 100)
+        return rg.contexto_velas(v)
+    except (mb.FuenteNoDisponible, KeyError, ValueError):
+        return None
+
+
+def senales_ia(pares):
+    """Pronóstico diario de tu MLP/LSTM para cada cripto del bot (agente modelo_dl)."""
+    salida = {}
+    for par in pares:
+        p_ = pronosticos.get(mb.PARES.get(par)) or {}
+        if p_:
+            salida[par] = {"senal": p_.get("senal"), "estimado": p_.get("estimado_dl"), "umbral": p_.get("umbral")}
+    return salida
 
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -554,13 +578,25 @@ def formulario_bot(est):
     """Configuración del bot (modo paper o real)."""
     with st.form("form_mexc", border=False):
         pares_sel = st.multiselect("Pares de MEXC", list(mb.PARES), default=list(mb.PARES))
+        estrategia = st.radio("Estrategia", ["Pro: IA + riesgo", "Simple: topes fijos"], horizontal=True,
+                              help="Pro: los agentes de IA proponen, el riesgo puede vetar, SL/TP con ATR de 15 min y "
+                                   "tamaño por % de riesgo. Simple: compra y vende con topes fijos.")
+        r1, r2, r3, r4 = st.columns(4)
+        riesgo_pct = r1.number_input("Riesgo por operación (%)", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
+        k_sl = r2.number_input("SL (× ATR)", min_value=0.5, max_value=5.0, value=1.5, step=0.5)
+        k_tp = r3.number_input("TP (× ATR)", min_value=1.0, max_value=8.0, value=3.0, step=0.5)
+        t_max = r4.number_input("Tiempo máx. (min)", min_value=15, max_value=1440, value=240, step=15)
+        l1, l2, l3 = st.columns(3)
+        perd_dia = l1.number_input("Pérdida diaria máx. (%)", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
+        dd_max = l2.number_input("Drawdown máx. (%)", min_value=1.0, max_value=20.0, value=5.0, step=0.5)
+        max_pos = l3.number_input("Posiciones máx.", min_value=1, max_value=10, value=4, step=1)
         c1, c2 = st.columns(2)
-        monto = c1.number_input("Monto por orden (USDT)", min_value=mb.MONTO_MINIMO, max_value=mb.CAPITAL_MEXC,
-                                value=5_000.0, step=500.0)
+        monto = c1.number_input("Monto máximo por orden (USDT)", min_value=mb.MONTO_MINIMO, max_value=mb.CAPITAL_MEXC,
+                                value=2_500.0, step=500.0)
         vel = c2.select_slider("Actualizar cada", options=[2, 5, 10, 30], value=5, format_func=lambda x: f"{x} s")
         c3, c4 = st.columns(2)
-        tc = c3.slider("Tope de compra (baja desde su máximo)", 0.2, 5.0, 0.5, 0.1, format="%.1f%%")
-        tv = c4.slider("Tope de venta (ganancia)", 0.3, 5.0, 0.8, 0.1, format="%.1f%%")
+        tc = c3.slider("Tope de compra (baja desde su máximo)", 0.2, 5.0, 0.2, 0.1, format="%.1f%%")
+        tv = c4.slider("Tope de venta (solo estrategia simple)", 0.3, 5.0, 0.5, 0.1, format="%.1f%%")
         c5, c6 = st.columns(2)
         usar_sl = c5.toggle("Usar stop-loss", value=False, help="Apagado: el bot solo vende con ganancia.")
         sl = c6.slider("Stop-loss", 0.5, 20.0, 5.0, 0.5, format="%.1f%%")
@@ -574,6 +610,10 @@ def formulario_bot(est):
         enviar = st.form_submit_button("Iniciar bot" if est["bot"] is None else "Reiniciar bot con esta configuración",
                                        type="primary")
     if enviar:
+        conf_pro = {"estrategia": "pro" if estrategia.startswith("Pro") else "simple", "riesgo_pct": riesgo_pct / 100,
+                    "k_sl": k_sl, "k_tp": k_tp, "tiempo_max_min": int(t_max),
+                    "limites": {"perdida_diaria_max": perd_dia / 100, "drawdown_max": dd_max / 100,
+                                "max_posiciones": int(max_pos), "racha_max": 4}}
         try:
             pr, fuente = precios_bot(tuple(pares_sel))
             if pedir_real:
@@ -585,15 +625,72 @@ def formulario_bot(est):
                 if usdt < monto_real:
                     raise ValueError(f"Tu cuenta Spot tiene {usdt:,.2f} USDT; necesitas al menos {monto_real:,.2f} USDT.")
                 est["bot"] = mb.bot_nuevo(pr, monto_real, tc / 100, tv / 100, sl / 100 if usar_sl else None,
-                                          capital=min(tope_real, usdt), modo="real")
+                                          capital=min(tope_real, usdt), modo="real", **conf_pro)
             else:
-                est["bot"] = mb.bot_nuevo(pr, monto, tc / 100, tv / 100, sl / 100 if usar_sl else None)
+                est["bot"] = mb.bot_nuevo(pr, monto, tc / 100, tv / 100, sl / 100 if usar_sl else None, **conf_pro)
             est["bot"].update({"fuente": fuente, "intervalo_s": vel})
             st.session_state.mexc_corriendo = True
             mb.guardar_estado(est)
             st.rerun()
         except (ValueError, mb.FuenteNoDisponible, mxc.ErrorMEXC) as e:
             st.error(str(e))
+
+
+def tabla_metricas(m):
+    """Métricas de desempeño del criterio financiero de la rúbrica (todas netas de costos)."""
+    def f(x, fmt):
+        return "—" if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))) else fmt.format(x)
+    n = m["operaciones"]
+    filas = pd.DataFrame([
+        ("Operaciones cerradas", str(n), "Ventas ejecutadas con PnL neto"),
+        ("Win rate", f(m["win_rate"], "{:.1%}"), f"IC 95% Wilson: {m['wilson_bajo']:.0%} – {m['wilson_alto']:.0%}" if n else "—"),
+        ("Expectativa por operación", f(m["expectativa"], "{:+,.2f} USDT"), "Promedio de PnL neto por venta"),
+        ("Profit factor", f(m["profit_factor"], "{:.2f}"), "Ganancias brutas ÷ pérdidas brutas"),
+        ("RR neto realizado", f(m["rr_neto"], "{:.2f}"), "Ganancia media ÷ pérdida media"),
+        ("Acierto de equilibrio", f(m["acierto_equilibrio"], "{:.1%}"), "Win rate mínimo para no perder con ese RR"),
+        ("Drawdown máximo", f(m["max_drawdown"], "{:.2%}"), "Peor caída del equity desde su pico"),
+        ("Sharpe (por operación)", f(m["sharpe_operaciones"], "{:.2f}"), "Media ÷ desviación de los rendimientos × √n"),
+        ("Costos supuestos", f"{rg.COMISION:.2%} + {rg.DESLIZAMIENTO:.2%} por lado",
+         f"Ida y vuelta {rg.COSTO_IDA_VUELTA:.2%} (comisión + deslizamiento)"),
+    ], columns=["Métrica", "Valor", "Cómo se calcula"])
+    html(ui.titulo_panel("Métricas de desempeño", "netas de costos"))
+    html(ui.tabla(filas, negritas=["Métrica"]))
+    if n < rg.MIN_OPS_KELLY:
+        st.caption(f"Con {n} operaciones el intervalo de confianza todavía es amplio; el tamaño usa riesgo fijo hasta "
+                   f"{rg.MIN_OPS_KELLY} operaciones y después Kelly ½ sobre la cota inferior de Wilson.")
+
+
+def panel_ia_bitacora(est):
+    bot = est["bot"]
+    html(ui.titulo_panel("Cómo decide el bot", ag.VERSION))
+    st.markdown(f"**Tesis:** {mb.TESIS}")
+    st.markdown("**Jerarquía:** (1) el disparador de la tesis detecta la caída → (2) cuatro agentes de IA opinan y el "
+                "coordinador calcula una probabilidad → (3) el **riesgo determinista puede vetar** (kill switch, pérdida "
+                "diaria, drawdown, posiciones, racha, RR neto < 1) → (4) se ejecuta con tamaño por riesgo. "
+                "La IA **no** pone órdenes ni cambia tamaños o límites. Salidas: SL > TP > señal contraria de la IA > tiempo máximo.")
+    pesos = ag.pesos_desde_auditoria(est.get("auditoria", {}))
+    aud = est.get("auditoria", {})
+    tabla_ag = pd.DataFrame([{"Agente": a_, "Peso actual": pesos[a_], "Votos auditados": aud.get(a_, {}).get("votos", 0),
+                              "Aciertos": aud.get(a_, {}).get("aciertos", 0)} for a_ in ag.AGENTES])
+    html(ui.tabla(tabla_ag, formatos={"Peso actual": "{:.2f}"}, negritas=["Agente"]))
+    st.caption(f"Pesos = {ag.PISO_PESO:.2f} + {1 - ag.PISO_PESO:.2f} · (aciertos + 1)/(votos + 2), aplicados desde "
+               f"{ag.MIN_OPS_PESOS} operaciones auditadas contra el PnL real.")
+    bit = est.get("bitacora", [])
+    ok, malo = rg.bitacora_verificar(bit)
+    html(ui.titulo_panel("Bitácora inmutable", f"{len(bit)} eventos · " + ("cadena íntegra ✓" if ok else f"ALTERADA en #{malo}"),
+                         "up" if ok else "dn"))
+    if bit:
+        filas = [{"#": e["n"], "Fecha": e["fecha"], "Evento": e["tipo"], "Par": e["par"],
+                  "Detalle": (e.get("motivo") or (e.get("decision") or {}).get("razon") or "")[:110],
+                  "Hash": e["hash"][:12] + "…"} for e in bit[-40:][::-1]]
+        html(ui.tabla(pd.DataFrame(filas), negritas=["Evento"]))
+        st.download_button("Descargar bitácora (JSON)", json.dumps(bit, ensure_ascii=False, indent=1, default=str).encode("utf-8"),
+                           file_name="bitacora_bot_mexc.json", mime="application/json")
+    else:
+        html(ui.aviso("La bitácora registra cada propuesta de la IA, cada veto del riesgo y cada orden, con un hash "
+                      "que depende del anterior: si alguien modifica un registro, la verificación lo detecta."))
+    if bot is not None and bot.get("estrategia") != "pro":
+        st.caption("Este bot usa la estrategia simple: inicia uno con «Pro: IA + riesgo» para usar los agentes.")
 
 
 def cerrar_posiciones(est):
@@ -698,7 +795,9 @@ with tab_bot:
                 st.session_state.mexc_corriendo = False
                 html(ui.aviso("Modo real en pausa: no hay conexión directa con MEXC o faltan las llaves.", "real"))
             else:
-                ops_nuevas = mb.bot_actualizar(est, pr, fuente, ejecutor=CLIENTE if bot.get("modo") == "real" else None)
+                ctx_ia = ({p_: contexto_par(p_) for p_ in pares}, senales_ia(pares)) if bot.get("estrategia") == "pro" else ({}, {})
+                ops_nuevas = mb.bot_actualizar(est, pr, fuente, ejecutor=CLIENTE if bot.get("modo") == "real" else None,
+                                               contexto=ctx_ia[0], ia=ctx_ia[1])
                 avisos = [wa.mensaje_mexc(o, bot) for o in ops_nuevas if o.get("estado", "Ejecutada") == "Ejecutada"]
                 if avisos and WA_CFG["listo"]:
                     wa.enviar_en_segundo_plano(WA_CFG, avisos)
@@ -817,12 +916,20 @@ with tab_bot:
                     html(ui.valor_grande("Equity del bot", f"{r['patrimonio']:,.2f}", "USDT",
                                          f"{r['ganancia_total']:+,.2f} ({r['rendimiento']:+.2%})", ui.tono(r["ganancia_total"])))
                     horas, minutos = divmod(int(r["minutos"]), 60)
-                    html(ui.lista_kv([
-                        ("Modo", "REAL" if bot.get("modo") == "real" else "Paper", "dn" if bot.get("modo") == "real" else "neu"),
-                        ("Tope de compra", f"−{bot['tope_compra']:.1%}", "neu"),
-                        ("Tope de venta", f"+{bot['tope_venta']:.1%}", "neu"),
-                        ("Monto por orden", f"{bot['monto_operacion']:,.0f} USDT", "neu"),
-                        ("Stop-loss", f"−{bot['stop_loss']:.1%}" if bot["stop_loss"] else "Apagado", "neu"),
+                    pro = bot.get("estrategia") == "pro"
+                    filas_kv = [("Modo", "REAL" if bot.get("modo") == "real" else "Paper", "dn" if bot.get("modo") == "real" else "neu"),
+                                ("Estrategia", "Pro · IA + riesgo" if pro else "Simple · topes", "neu"),
+                                ("Disparador", f"−{bot['tope_compra']:.1%} desde el máximo", "neu")]
+                    if pro:
+                        filas_kv += [("SL / TP", f"{bot['k_sl']:.1f} / {bot['k_tp']:.1f} × ATR 15m", "neu"),
+                                     ("Riesgo por orden", f"{bot['riesgo_pct']:.2%} del equity", "neu"),
+                                     ("Kill switch", ("ACTIVO · " + str(bot.get("kill_motivo"))[:40]) if bot.get("kill") else "Armado",
+                                      "dn" if bot.get("kill") else "up")]
+                    else:
+                        filas_kv += [("Tope de venta", f"+{bot['tope_venta']:.1%}", "neu"),
+                                     ("Stop-loss", f"−{bot['stop_loss']:.1%}" if bot["stop_loss"] else "Apagado", "neu")]
+                    html(ui.lista_kv(filas_kv + [
+                        ("Monto máx. por orden", f"{bot['monto_operacion']:,.0f} USDT", "neu"),
                         ("Operaciones", f"{r['compras']} compras · {r['ventas']} ventas", "neu"),
                         ("Ventas con ganancia", f"{r['ganadoras'] / r['ventas']:.0%}" if r["ventas"] else "—", "up"),
                         ("Tiempo activo", f"{horas} h {minutos} min", "neu"),
@@ -836,13 +943,23 @@ with tab_bot:
                                  help="Vende todas las posiciones abiertas y pausa el bot."):
                         cerrar_posiciones(est)
                         st.rerun()
+                    if bot.get("estrategia") == "pro":
+                        if bot.get("kill"):
+                            if st.button("Rearmar kill switch", key="btn_rearmar", help="Vuelve a permitir entradas nuevas."):
+                                mb.rearmar(est)
+                                mb.guardar_estado(est)
+                                st.rerun()
+                        elif st.button("Kill switch", key="btn_kill", help="Bloquea toda entrada nueva hasta rearmar."):
+                            mb.activar_kill(est, "manual")
+                            mb.guardar_estado(est)
+                            st.rerun()
                     with st.popover("Configurar bot"):
                         formulario_bot(est)
 
         # ---------- pestañas inferiores ----------
         n_ab = len(mb.resumen(bot)["abiertas"]) if bot else 0
-        t1, t2, t3, t4, t5 = st.tabs(["Últimas operaciones", f"Posiciones abiertas ({n_ab})", "Historial completo",
-                                      "Rendimiento", "Mi cuenta MEXC"])
+        t1, t2, t3, t4, t6, t5 = st.tabs(["Últimas operaciones", f"Posiciones abiertas ({n_ab})", "Historial completo",
+                                          "Rendimiento y métricas", "IA y bitácora", "Mi cuenta MEXC"])
         with t1:
             if bot and bot["operaciones"]:
                 tabla_ops(bot["operaciones"][-15:][::-1])
@@ -852,19 +969,29 @@ with tab_bot:
             if bot and n_ab:
                 ab = mb.resumen(bot)["abiertas"].rename(columns={
                     "par": "Par", "precio_compra": "Entrada", "precio_actual": "Precio actual", "objetivo_venta": "TP",
+                    "stop_loss": "SL",
                     "invertido_usdt": "Invertido (USDT)", "valor_usdt": "Valor (USDT)", "resultado_%": "PNL %"})
-                html(ui.tabla(ab, formatos={"Entrada": fp, "Precio actual": fp, "TP": fp, "Invertido (USDT)": "{:,.2f}",
+                html(ui.tabla(ab, formatos={"Entrada": fp, "Precio actual": fp, "TP": fp, "SL": fp, "Invertido (USDT)": "{:,.2f}",
                                             "Valor (USDT)": "{:,.2f}", "PNL %": "{:+.2f}%"}, colores=["PNL %"], negritas=["Par"]))
             else:
                 html(ui.aviso("Sin posiciones abiertas: el bot espera que algún precio baje hasta su tope de compra."))
         with t3:
-            if est["historial"]:
-                hist = est["historial"][::-1]
+            hist = est["historial"][::-1]
+            d1, d0, d2 = st.columns([1, 1, 3])
+            d1.download_button("Descargar historial (CSV)",
+                               pd.DataFrame(hist).to_csv(index=False).encode("utf-8") if hist else b"sin movimientos\n",
+                               file_name="movimientos_bot_mexc.csv", mime="text/csv", disabled=not hist,
+                               key="dl_hist_mexc")
+            try:
+                xlsx = exportar.excel_historial(hist, mb.resumen(bot) if bot else None, est.get("bitacora", [])) if hist else b""
+                d0.download_button("Descargar Excel", xlsx, file_name="historial_bot_mexc.xlsx", disabled=not hist,
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_xlsx_mexc")
+            except ImportError:
+                d0.caption("Para el Excel instala openpyxl: pip install openpyxl")
+            d2.caption(f"{len(hist)} movimientos de todas las sesiones del bot (compras y ventas, con PnL, SL, TP y "
+                       "probabilidad de la IA cuando aplica).")
+            if hist:
                 tabla_ops(hist, alto=440)
-                d1, d2 = st.columns([1, 4])
-                d1.download_button("Descargar CSV", pd.DataFrame(hist).to_csv(index=False).encode("utf-8"),
-                                   file_name="movimientos_bot_mexc.csv", mime="text/csv")
-                d2.caption(f"{len(hist)} movimientos de todas las sesiones del bot.")
             else:
                 html(ui.aviso("El historial aparecerá aquí cuando el bot haga su primera operación."))
         with t4:
@@ -888,8 +1015,11 @@ with tab_bot:
                         html(ui.aviso("El PNL por par aparece cuando el bot cierre su primera venta "
                                       f"(sube {bot['tope_venta']:.1%} desde la compra)."))
                 st.caption("Izquierda: equity del bot en el tiempo. Derecha: PNL realizado por par (USDT).")
+                tabla_metricas(r["metricas"])
             else:
                 html(ui.aviso("Inicia el bot para ver su rendimiento."))
+        with t6:
+            panel_ia_bitacora(est)
         with t5:
             panel_cuenta_mexc()
 
@@ -1178,6 +1308,14 @@ with tab_poly:
                 fig.add_hline(y=bot["capital"], line=dict(color="#5e6673", dash="dot"))
                 fig.update_yaxes(range=[curva.equity.min() * 0.995, curva.equity.max() * 1.005])
                 st.plotly_chart(estilo_exchange(fig, 300), width="stretch", config={"displayModeBar": False})
+                cal = pb.resumen(bot)["calibracion"]
+                html(ui.titulo_panel("Calibración de la IA", f"Brier {cal['brier']:.3f}" if cal["n"] else "sin apuestas cerradas"))
+                if cal["tabla"]:
+                    html(ui.tabla(pd.DataFrame(cal["tabla"]).rename(columns={
+                        "rango": "Probabilidad IA", "apuestas": "Apuestas", "predicho": "Predicho", "real": "Acierto real"}),
+                        formatos={"Predicho": "{:.0%}", "Acierto real": "{:.0%}"}))
+                st.caption("Brier = promedio de (probabilidad − resultado)². 0 es perfecto; 0.25 equivale a adivinar 50 %. "
+                           "Si el acierto real queda abajo de lo predicho, la IA está sobreconfiada y conviene subir la ventaja mínima.")
             else:
                 html(ui.aviso("Inicia el bot para ver su rendimiento."))
         with p4:

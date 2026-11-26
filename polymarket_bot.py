@@ -348,7 +348,24 @@ def resumen(bot):
             "win_rate": len(ganadas) / len(cerradas) if cerradas else np.nan,
             "en_juego": float(sum(a["monto"] for a in abiertas)),
             "sombra": len(sombra), "sombra_pnl": float(sum(a["ganancia"] or 0 for a in sombra)),
-            "rechazadas": sum(1 for a in bot["apuestas"] if a["estado"] == "rechazada")}
+            "rechazadas": sum(1 for a in bot["apuestas"] if a["estado"] == "rechazada"),
+            "calibracion": calibracion(cerradas)}
+
+
+def calibracion(cerradas, bins=(0.5, 0.6, 0.7, 0.8, 1.0001)):
+    """¿Se cumplen las probabilidades de la IA? Brier score y tabla «predicho vs real» por rangos.
+    Brier = promedio de (probabilidad − resultado)²; 0 es perfecto y 0.25 es lo mismo que adivinar 50 %."""
+    if not cerradas:
+        return {"brier": np.nan, "n": 0, "tabla": []}
+    p = np.array([a["prob_modelo"] for a in cerradas], dtype=float)
+    y = np.array([1.0 if a["estado"] == "ganada" else 0.0 for a in cerradas])
+    tabla = []
+    for lo, hi in zip(bins[:-1], bins[1:]):
+        m = (p >= lo) & (p < hi)
+        if m.any():
+            tabla.append({"rango": f"{lo:.0%}–{min(hi, 1):.0%}", "apuestas": int(m.sum()),
+                          "predicho": float(p[m].mean()), "real": float(y[m].mean())})
+    return {"brier": float(np.mean((p - y) ** 2)), "n": len(cerradas), "tabla": tabla}
 
 
 def horas_de_sombra(est):

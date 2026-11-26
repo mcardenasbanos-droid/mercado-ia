@@ -251,8 +251,11 @@ def mensaje_mexc(op, bot):
     """MEXC Spot solo permite Long (comprar y luego vender); no hay Short."""
     modo = "REAL" if op.get("modo") == "real" else "Paper"
     if op["tipo"] == "compra":
-        tp = op["precio"] * (1 + bot["tope_venta"])
-        sl = f"\nStop-loss: {_fp(op['precio'] * (1 - bot['stop_loss']))}" if bot.get("stop_loss") else ""
+        tp = op.get("tp") or op["precio"] * (1 + bot["tope_venta"])
+        sl_px = op.get("sl") or (op["precio"] * (1 - bot["stop_loss"]) if bot.get("stop_loss") else None)
+        sl = f"\nStop-loss: {_fp(sl_px)}" if sl_px else ""
+        if op.get("prob_ia") is not None:
+            sl += f"\nIA: P={op['prob_ia']:.0%} · RR neto {op.get('rr_neto', 0):.2f}"
         return (f"🟢 *LONG · COMPRAR {op['par']}*\nPrecio: {_fp(op['precio'])} USDT\nMonto: {op['monto_usdt']:,.2f} USDT\n"
                 f"Tope de venta (TP): {_fp(tp)}{sl}\nModo: {modo} · Bot MEXC")
     g = op.get("ganancia_usdt") or 0.0

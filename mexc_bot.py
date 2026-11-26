@@ -21,6 +21,8 @@ import requests
 import yfinance as yf
 
 from mexc_cuenta import ErrorMEXC
+import agentes as ag
+import riesgo as rg
 
 URL_MEXC = "https://api.mexc.com"
 CAPITAL_MEXC = 50_000.0
@@ -182,7 +184,7 @@ def obtener_velas(par, intervalo="1m", limite=120):
 # Estado del bot (se guarda en bot_mexc.json para no perder nada al cerrar la app)
 # ---------------------------------------------------------------------------
 def estado_vacio():
-    return {"bot": None, "historial": []}
+    return {"bot": None, "historial": [], "bitacora": [], "auditoria": {}}
 
 
 def cargar_estado():
@@ -206,7 +208,8 @@ def guardar_estado(est):
 
 
 def bot_nuevo(precios, monto_operacion, tope_compra, tope_venta, stop_loss=None, capital=CAPITAL_MEXC,
-              modo="paper"):
+              modo="paper", estrategia="pro", riesgo_pct=0.005, k_sl=1.5, k_tp=3.0, tiempo_max_min=240,
+              limites=None):
     if not precios:
         raise ValueError("Elige al menos un par para el bot.")
     if tope_venta < TOPE_VENTA_MINIMO:
@@ -226,6 +229,10 @@ def bot_nuevo(precios, monto_operacion, tope_compra, tope_venta, stop_loss=None,
         "activos": {p: {"ultimo": float(px), "maximo_reciente": float(px), "unidades": 0.0,
                         "precio_compra": None, "monto": 0.0, "espera_hasta": None} for p, px in precios.items()},
         "operaciones": [], "curva": [[t.isoformat(), float(capital)]], "fuente": "", "modo": modo,
+        # Estrategia "pro": agentes de IA + riesgo con veto + SL/TP con ATR + tamaño por riesgo
+        "estrategia": estrategia, "riesgo_pct": float(riesgo_pct), "k_sl": float(k_sl), "k_tp": float(k_tp),
+        "tiempo_max_min": int(tiempo_max_min), "limites": {**rg.LIMITES_DEFECTO, **(limites or {})},
+        "kill": False, "kill_motivo": None,
     }
 
 
@@ -252,13 +259,16 @@ def _rechazo(est, bot, a, par, tipo, px, error, fuente, t):
     return op
 
 
-def bot_actualizar(est, precios, fuente="MEXC", costo=COSTO, ejecutor=None):
-    """Aplica los topes con los precios reales recibidos. Devuelve las operaciones nuevas.
+def bot_actualizar(est, precios, fuente="MEXC", costo=COSTO, ejecutor=None, contexto=None, ia=None):
+    """Aplica la estrategia con los precios reales recibidos. Devuelve las operaciones nuevas.
 
-    ejecutor=None → modo paper (simulado). ejecutor=ClienteMEXC → modo real (órdenes en tu cuenta)."""
+    ejecutor=None → modo paper (simulado). ejecutor=ClienteMEXC → modo real (órdenes en tu cuenta).
+    contexto={par: riesgo.contexto_velas(...)} e ia={par: {'senal','estimado','umbral'}} alimentan la estrategia pro."""
     bot = est["bot"]
     if bot is None:
         return []
+    if bot.get("estrategia") == "pro":
+        return _actualizar_pro(est, precios, fuente, ejecutor, contexto or {}, ia or {})
     real = bot.get("modo") == "real" and ejecutor is not None
     bot["fuente"] = fuente
     t = ahora()
@@ -342,6 +352,8 @@ def bot_actualizar(est, precios, fuente="MEXC", costo=COSTO, ejecutor=None):
 
 def niveles(bot, par):
     a = bot["activos"][par]
+    if a["unidades"] > 0 and a.get("tp"):
+        return {"compra": None, "venta": a["tp"], "stop": a.get("sl"), "precio_compra": a["precio_compra"]}
     if a["unidades"] > 0:
         return {"compra": None, "venta": a["precio_compra"] * (1 + bot["tope_venta"]),
                 "stop": a["precio_compra"] * (1 - bot["stop_loss"]) if bot["stop_loss"] else None,
@@ -363,10 +375,12 @@ def resumen(bot):
                if ventas else pd.DataFrame(columns=["par", "ganancia_usdt", "ventas"]))
     abiertas = pd.DataFrame([
         {"par": p, "precio_compra": a["precio_compra"], "precio_actual": a["ultimo"],
-         "objetivo_venta": a["precio_compra"] * (1 + bot["tope_venta"]), "invertido_usdt": a["monto"],
+         "objetivo_venta": a.get("tp") or a["precio_compra"] * (1 + bot["tope_venta"]), "stop_loss": a.get("sl"),
+         "invertido_usdt": a["monto"],
          "valor_usdt": a["unidades"] * a["ultimo"], "resultado_%": (a["ultimo"] / a["precio_compra"] - 1) * 100}
         for p, a in bot["activos"].items() if a["unidades"] > 0],
-        columns=["par", "precio_compra", "precio_actual", "objetivo_venta", "invertido_usdt", "valor_usdt", "resultado_%"])
+        columns=["par", "precio_compra", "precio_actual", "objetivo_venta", "stop_loss", "invertido_usdt", "valor_usdt",
+                 "resultado_%"])
     return {
         "capital": bot["capital"], "patrimonio": pat, "efectivo": bot["efectivo"],
         "invertido": pat - bot["efectivo"], "ganancia_realizada": realizada, "ganancia_no_realizada": no_realizada,
@@ -377,6 +391,8 @@ def resumen(bot):
         "ganadoras": sum(o["ganancia_usdt"] > 0 for o in ventas),
         "mejor": max((o["ganancia_usdt"] for o in ventas), default=None),
         "minutos": minutos, "por_par": por_par, "abiertas": abiertas,
+        "metricas": rg.metricas([o["ganancia_usdt"] for o in ventas], [o["ganancia_%"] / 100 for o in ventas],
+                                [p_ for _, p_ in bot["curva"]] + [pat], bot["capital"]),
     }
 
 
@@ -392,3 +408,180 @@ def pendientes_demo(est):
     return [o for o in bot.get("operaciones", [])
             if o["par"] in PARES_DEMO_MEXC and o.get("estado", "Ejecutada") == "Ejecutada"
             and o.get("modo", "paper") == "paper" and clave_op(o) not in copiadas]
+
+
+# ---------------------------------------------------------------------------
+# Estrategia PRO: tesis de reversión a la media + agentes de IA + riesgo con veto
+# ---------------------------------------------------------------------------
+TESIS = ("Reversión a la media intradía: después de una caída rápida desde su máximo reciente, el precio de una cripto "
+         "líquida tiende a rebotar parte del movimiento. Funciona en mercados laterales o alcistas; falla en tendencias "
+         "bajistas fuertes (por eso el agente de tendencia vota en contra y el riesgo limita pérdidas y rachas).")
+SILENCIO_BITACORA_MIN = 10        # no repetir el mismo descarte/veto del mismo par en la bitácora
+
+
+def _bitacora(est, tipo, par, t, **datos):
+    est.setdefault("bitacora", [])
+    return rg.bitacora_agregar(est["bitacora"], {"fecha": t.strftime("%Y-%m-%d %H:%M:%S"), "tipo": tipo, "par": par,
+                                                 "bot_id": est["bot"]["id"], **datos})
+
+
+def _silencioso(a, clave, t):
+    """True si ya se registró el mismo aviso hace menos de SILENCIO_BITACORA_MIN minutos."""
+    previo = a.get("ultimo_aviso", {})
+    if previo.get("clave") == clave and t < pd.Timestamp(previo["t"]) + pd.Timedelta(minutes=SILENCIO_BITACORA_MIN):
+        return True
+    a["ultimo_aviso"] = {"clave": clave, "t": t.isoformat()}
+    return False
+
+
+def _actualizar_pro(est, precios, fuente, ejecutor, contexto, ia):
+    bot = est["bot"]
+    real = bot.get("modo") == "real" and ejecutor is not None
+    bot["fuente"] = fuente
+    t = ahora()
+    hoy = t.strftime("%Y-%m-%d")
+    nuevas = []
+    pesos = ag.pesos_desde_auditoria(est.setdefault("auditoria", {}))
+    for par, a in bot["activos"].items():
+        if par not in precios:
+            continue
+        px = float(precios[par])
+        a["ultimo"] = px
+        if _en_espera(a, t):
+            continue
+        if a["unidades"] > 0:
+            # ---- Salidas, en orden de prioridad: SL > TP > señal contraria de la IA > tiempo máximo ----
+            sl = a.get("sl") or a["precio_compra"] * (1 - (bot.get("stop_loss") or 0.01))
+            tp = a.get("tp") or a["precio_compra"] * (1 + bot["tope_venta"])
+            voto_dl = ag.agente_modelo_dl(ia.get(par))
+            minutos = (t - pd.Timestamp(a["entrada_t"])).total_seconds() / 60 if a.get("entrada_t") else 0
+            motivo = None
+            if px <= sl:
+                motivo = f"stop-loss (SL {sl:,.6g})"
+            elif px >= tp:
+                motivo = f"take profit (TP {tp:,.6g})"
+            elif voto_dl["voto"] < 0 and voto_dl["confianza"] >= 0.5 and a.get("dl_entrada", 0) >= 0:
+                # solo si la IA CAMBIÓ de opinión después de entrar
+                motivo = f"señal contraria de la IA ({voto_dl['razon']})"
+            elif minutos >= bot.get("tiempo_max_min", 240):
+                motivo = f"tiempo máximo ({bot.get('tiempo_max_min', 240)} min)"
+            if not motivo:
+                continue
+            order_id = None
+            if real:
+                try:
+                    res = ejecutor.vender_mercado(par, a["unidades"])
+                except ErrorMEXC as e:
+                    nuevas.append(_rechazo(est, bot, a, par, "venta", px, e, fuente, t))
+                    continue
+                neto, px_ejec, comision, order_id = res["total_usdt"], res["precio"], None, res["order_id"]
+                vendidas = res["cantidad"]
+                costo_vendido = a["monto"] * min(vendidas / a["unidades"], 1.0)
+            else:
+                px_ejec = px * (1 - rg.DESLIZAMIENTO)          # una venta a mercado se llena un poco abajo
+                bruto = a["unidades"] * px_ejec
+                comision = bruto * rg.COMISION
+                neto, vendidas, costo_vendido = bruto - comision, a["unidades"], a["monto"]
+            ganancia = neto - costo_vendido
+            bot["efectivo"] += neto
+            ag.auditar_cierre(est["auditoria"], a.get("votos"), ganancia)
+            op = {"bot_id": bot["id"], "fecha": t.strftime("%Y-%m-%d %H:%M:%S"), "par": par, "tipo": "venta",
+                  "motivo": motivo, "precio": px_ejec, "unidades": vendidas, "monto_usdt": neto,
+                  "comision_usdt": comision, "ganancia_usdt": ganancia, "ganancia_%": ganancia / costo_vendido * 100,
+                  "fuente": fuente, "modo": "real" if real else "paper", "estado": "Ejecutada", "order_id": order_id,
+                  "duracion_min": round(minutos, 1)}
+            _registrar(est, op)
+            _bitacora(est, "venta", par, t, motivo=motivo, precio=px_ejec, pnl_usdt=round(ganancia, 4),
+                      votos_auditados=[v["agente"] for v in a.get("votos") or []])
+            nuevas.append(op)
+            a.update({"unidades": 0.0, "precio_compra": None, "monto": 0.0, "maximo_reciente": px, "sl": None,
+                      "tp": None, "votos": None, "entrada_t": None})
+            continue
+
+        # ---- Entrada: 1) disparador de la tesis ----
+        a["maximo_reciente"] = max(a["maximo_reciente"], px)
+        caida = px / a["maximo_reciente"] - 1
+        if caida > -bot["tope_compra"]:
+            continue
+        ctx = contexto.get(par)
+        # ---- 2) agentes de IA proponen (no ejecutan) ----
+        dec = ag.decidir_entrada(ia.get(par), ctx, px, pesos, rg.COSTO_IDA_VUELTA)
+        if dec["decision"] != "comprar":
+            if not _silencioso(a, "ia:" + dec["decision"], t):
+                _bitacora(est, "ia_descarta", par, t, caida=round(caida, 5), decision=dec)
+            continue
+        # ---- 3) riesgo determinista con veto ----
+        equity = patrimonio(bot)
+        veto = rg.veto_riesgo(bot, equity, hoy)
+        if veto is None and ctx is None:
+            veto = "sin velas cerradas para calcular el ATR"
+        if veto is None:
+            niv = rg.niveles_atr(px * (1 + rg.DESLIZAMIENTO), ctx["atr"], bot.get("k_sl", 1.5), bot.get("k_tp", 3.0))
+            if niv["rr_neto"] < 1:
+                veto = f"RR neto {niv['rr_neto']:.2f} < 1 después de costos"
+        if veto is None:
+            ventas = [o["ganancia_usdt"] for o in bot["operaciones"]
+                      if o["tipo"] == "venta" and o.get("estado", "Ejecutada") == "Ejecutada"]
+            monto, regla = rg.tamano_posicion(equity, bot["efectivo"], px, niv["sl"], bot.get("riesgo_pct", 0.005),
+                                              bot["monto_operacion"], ventas, niv["rr_neto"])
+            if monto < MONTO_MINIMO:
+                veto = f"tamaño {monto:,.2f} USDT menor al mínimo de {MONTO_MINIMO:.0f}"
+        if veto is not None:
+            if rg.debe_activar_kill(veto) and not bot.get("kill"):
+                bot.update({"kill": True, "kill_motivo": veto})
+                _bitacora(est, "kill_switch", par, t, motivo=veto)
+            if not _silencioso(a, "veto:" + veto.split(" ")[0], t):
+                _bitacora(est, "veto_riesgo", par, t, motivo=veto, propuesta=dec["probabilidad"])
+            continue
+        # ---- 4) ejecución ----
+        order_id = None
+        if real:
+            try:
+                res = ejecutor.comprar_mercado(par, monto)
+            except ErrorMEXC as e:
+                nuevas.append(_rechazo(est, bot, a, par, "compra", px, e, fuente, t))
+                continue
+            unidades, px_ejec, monto, comision, order_id = (res["cantidad"], res["precio"], res["total_usdt"], None,
+                                                            res["order_id"])
+        else:
+            px_ejec = px * (1 + rg.DESLIZAMIENTO)              # una compra a mercado se llena un poco arriba
+            unidades = monto / (px_ejec * (1 + rg.COMISION))
+            comision = unidades * px_ejec * rg.COMISION
+        niv = rg.niveles_atr(px_ejec, ctx["atr"], bot.get("k_sl", 1.5), bot.get("k_tp", 3.0))
+        a.update({"unidades": unidades, "precio_compra": px_ejec, "monto": monto, "espera_hasta": None,
+                  "sl": niv["sl"], "tp": niv["tp"], "votos": dec["votos"], "entrada_t": t.isoformat(),
+                  "dl_entrada": next((v["voto"] for v in dec["votos"] if v["agente"] == "modelo_dl"), 0)})
+        bot["efectivo"] -= monto
+        op = {"bot_id": bot["id"], "fecha": t.strftime("%Y-%m-%d %H:%M:%S"), "par": par, "tipo": "compra",
+              "motivo": f"reversión {caida:.2%} desde su máximo · IA P={dec['probabilidad']:.0%}",
+              "precio": px_ejec, "unidades": unidades, "monto_usdt": monto, "comision_usdt": comision,
+              "ganancia_usdt": None, "ganancia_%": None, "fuente": fuente, "modo": "real" if real else "paper",
+              "estado": "Ejecutada", "order_id": order_id, "sl": niv["sl"], "tp": niv["tp"],
+              "rr_neto": round(niv["rr_neto"], 3), "prob_ia": dec["probabilidad"], "tamano": regla}
+        _registrar(est, op)
+        _bitacora(est, "compra", par, t, precio=px_ejec, monto=round(monto, 4), sl=niv["sl"], tp=niv["tp"],
+                  rr_neto=round(niv["rr_neto"], 3), atr=ctx["atr"], tamano=regla, decision=dec)
+        nuevas.append(op)
+    ultimo_t = pd.Timestamp(bot["curva"][-1][0]) if bot["curva"] else None
+    if ultimo_t is None or (t - ultimo_t).total_seconds() >= 15 or nuevas:
+        bot["curva"].append([t.isoformat(), patrimonio(bot)])
+        if len(bot["curva"]) > 6000:
+            bot["curva"] = bot["curva"][-6000:]
+    if len(est.get("bitacora", [])) > 20000:          # la cadena se conserva: se exporta antes de recortar
+        est["bitacora_recortada"] = True
+    return nuevas
+
+
+def rearmar(est):
+    """Kill switch: solo una persona lo rearma (botón en la app)."""
+    bot = est["bot"]
+    if bot and bot.get("kill"):
+        _bitacora(est, "rearme_manual", "-", ahora(), motivo_previo=bot.get("kill_motivo"))
+        bot.update({"kill": False, "kill_motivo": None})
+
+
+def activar_kill(est, motivo="manual"):
+    bot = est["bot"]
+    if bot and not bot.get("kill"):
+        bot.update({"kill": True, "kill_motivo": motivo})
+        _bitacora(est, "kill_switch", "-", ahora(), motivo=motivo)

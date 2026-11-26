@@ -8,7 +8,7 @@ recomendación y de cada operación.
 > Proyecto académico. Las señales y recomendaciones **no son asesoría financiera**.
 
 **Repositorio:** https://github.com/mcardenasbanos-droid/mercado-ia
-**Versión actual:** **v2.4** (26 de noviembre de 2026). El detalle está en [Historial de versiones](#historial-de-versiones).
+**Versión actual:** **v2.5** (26 de noviembre de 2026). El detalle está en [Historial de versiones](#historial-de-versiones).
 
 ---
 
@@ -28,6 +28,8 @@ recomendación y de cada operación.
 13. [Seguridad](#seguridad)
 14. [Limitaciones conocidas](#limitaciones-conocidas)
 15. [Problemas comunes](#problemas-comunes)
+16. [Autoevaluación con la rúbrica](#autoevaluación-con-la-rúbrica)
+17. [Rutas de API usadas](#rutas-de-api-usadas)
 
 ---
 
@@ -81,12 +83,16 @@ app_bolsa/
 ├── app.py                 ← interfaz (7 pestañas)
 ├── ui.py                  ← diseño estilo exchange (colores, tablas, paneles)
 ├── nucleo.py              ← datos, indicadores, pronóstico y portafolio
-├── mexc_bot.py            ← precios públicos de MEXC y lógica del bot
+├── mexc_bot.py            ← precios públicos de MEXC y lógica del bot (estrategias simple y pro)
+├── agentes.py             ← IA como cerebro: 4 agentes + coordinador con pesos aprendidos
+├── riesgo.py              ← ATR/RSI/MACD, métricas, costos, SL/TP, tamaño (Kelly), límites, bitácora con hash
 ├── mexc_cuenta.py         ← conexión privada a tu cuenta MEXC (firma HMAC-SHA256)
 ├── polymarket_bot.py      ← bot de Polymarket (datos públicos, señal, cartera paper)
 ├── polymarket_real.py     ← ÚNICO módulo que puede enviar apuestas reales
 ├── notificaciones.py      ← avisos al celular (Telegram, ntfy, CallMeBot o Twilio)
-├── tests/                 ← pruebas automáticas
+├── tests/                 ← 44 pruebas automáticas (pytest)
+├── .github/workflows/ci.yml ← CI: compila y corre las pruebas en cada push
+├── iniciar.bat            ← arranque en 1 comando (Windows)
 ├── secrets_ejemplo.toml   ← plantilla de llaves (sin llaves reales)
 ├── requirements.txt
 ├── assets/logo.png
@@ -126,17 +132,38 @@ Los modelos siguen el protocolo del PDF y se entrenan en Google Colab con GPU T4
   - Precios, velas de 1m/5m/15m/1h y estadísticas de 24 h vienen de la **API pública Spot v3 de MEXC**: `/ticker/price`, `/klines`, `/ticker/24hr`.
   - Se actualiza automáticamente cada pocos segundos.
 - **10 pares:** BTC, ETH, SOL, BNB, XRP, ADA, DOGE, LTC, LINK y AVAX contra USDT.
-- **Estrategia:**
-  - **Compra** cuando el precio baja un % (tope de compra) desde su máximo reciente.
-  - **Vende** cuando alcanza el **tope de venta (TP)**, o el stop-loss si se activa.
-  - Recomendado: TP 0.5% y 2,500 USDT por orden.
+- **Estrategia Pro (por defecto): IA + riesgo.**
+  - **Tesis:** reversión a la media intradía. Tras una caída rápida desde su máximo reciente, una cripto líquida tiende a rebotar.
+    Funciona en mercados laterales o alcistas; falla en tendencias bajistas fuertes.
+  - **1 · Disparador:** el precio baja el *tope de compra* (0.2%) desde su máximo reciente.
+  - **2 · Agentes de IA** (`agentes.py`), cada uno con un solo rol, votan con confianza 0–1 y razón:
+    `modelo_dl` (tu MLP/LSTM), `tecnico` (RSI 14 y MACD), `tendencia` (SMA 20) y `volatilidad` (ATR).
+    El coordinador los combina con pesos y entrega un JSON validado: *decisión, probabilidad, confianza, razón, votos*.
+    Compra solo si P ≥ 55%. Si todos se abstienen, la decisión de respaldo es **no operar**.
+  - **3 · Riesgo con veto** (`riesgo.py`, determinista). Bloquea la entrada si se cumple cualquiera de estas condiciones:
+    kill switch activo, pérdida del día ≥ 2%, drawdown ≥ 5%, 4 posiciones abiertas, 4 pérdidas seguidas o RR neto < 1.
+    Los tres límites de pérdida activan el **kill switch**, que solo una persona rearma.
+  - **4 · Ejecución:**
+    - **SL = entrada − 1.5·ATR** y **TP = entrada + 3·ATR**, con el ATR de Wilder en velas **cerradas** de 15 min.
+    - **Tamaño:** se arriesga 0.5% del equity hasta el SL, contando costos.
+    - Con ≥ 30 operaciones se usa **Kelly ½** sobre la cota inferior de Wilson del acierto, con tope por orden.
+  - **Salidas, en este orden:** SL > TP > señal contraria de la IA (si cambia de opinión) > tiempo máximo (240 min).
+  - **Costos:** 0.10% de comisión + 0.05% de deslizamiento por lado (0.30% ida y vuelta) en cada cálculo.
+  - La IA **propone**; nunca pone órdenes ni cambia tamaños o límites.
+  - Los pesos de los agentes se **auditan contra el PnL real**: peso = 0.10 + 0.90·(aciertos+1)/(votos+2), desde 10 operaciones.
+- **Estrategia Simple:** compra con el tope de compra y vende con un tope de venta fijo (la versión anterior).
 - **Modos:**
   1. **Paper** (por defecto): 50,000 USDT de práctica, con precios reales y 0.10% de comisión.
   2. **Real** (opcional):
      - Órdenes Spot reales a mercado.
      - Mínimo 5 USDT por orden y un tope total configurable.
      - Requiere llaves y escribir `OPERAR CON DINERO REAL`.
-- **Resultados:** últimas operaciones, posiciones abiertas, historial completo descargable en CSV, PnL realizado y no realizado, tasa de aciertos y gráfica de rendimiento.
+- **Resultados:**
+  - Últimas operaciones, posiciones con SL y TP, historial completo en CSV y curva de equity.
+  - **Métricas netas de costos:** win rate con intervalo de Wilson al 95%, expectativa por operación, profit factor, RR neto,
+    acierto de equilibrio, drawdown máximo y Sharpe por operación.
+- **IA y bitácora:** pesos y aciertos de cada agente, y una **bitácora inmutable**. Cada propuesta, veto, kill switch y orden
+  lleva un SHA-256 encadenado al evento anterior; la app verifica la cadena y se puede descargar en JSON.
 - **Mi cuenta MEXC:** muestra el saldo real si configuras tus llaves (solo lectura). También hay una prueba de conexión que no ejecuta órdenes.
 
 > La API de MEXC **no tiene cuenta demo ni sandbox** (lo dice MEXC oficialmente), por eso las operaciones del modo paper no
@@ -213,6 +240,7 @@ Otros servicios que también funcionan son `proveedor = "ntfy"` (con `tema`), `"
 | **v2.2** | 26/11/2026 | **Bot Polymarket** (BTC y ETH por hora) con la señal del pronóstico de la IA. Modos paper, sombra y real. |
 | **v2.3** | 26/11/2026 | **Avisos al celular** de cada compra o venta (LONG/SHORT): CallMeBot, Twilio, ntfy y **Telegram**. |
 | **v2.4** | 26/11/2026 | Avisos de **recomendaciones de la IA** (LONG/SHORT), un mensaje por aviso, envío confiable (solo se marca como enviado si llegó) y README completo. |
+| **v2.5** | 26/11/2026 | Mejoras guiadas por la rúbrica: **estrategia Pro** (4 agentes de IA + coordinador con pesos aprendidos, riesgo determinista con veto y kill switch, SL/TP con ATR, tamaño por riesgo y Kelly ½), **métricas profesionales**, deslizamiento en los costos, **bitácora con hash encadenado**, calibración (Brier) del bot Polymarket, CI y arranque en 1 comando. |
 
 ### Errores corregidos durante el desarrollo
 | Problema | Corrección |
@@ -258,6 +286,9 @@ Para ver tus versiones exactas: `pip freeze > versiones.txt`.
    pip install -r requirements.txt
    ```
    En Mac o Linux, el paso de activar es `source .venv/bin/activate`.
+**Arranque en 1 comando (Windows):** doble clic en `iniciar.bat`. Crea el entorno si no existe, instala y abre la app.
+Sin llaves arranca en **modo paper**.
+
 4. **Correr:**
    ```bash
    .venv\Scripts\activate
@@ -294,13 +325,19 @@ activo = "1"
 pip install pytest
 python -m pytest tests -q
 ```
-Las pruebas (29) usan clientes falsos y nunca se conectan a nada real. Cubren:
+Las pruebas (44) usan clientes falsos y nunca se conectan a nada real. Cubren:
 - mercados y probabilidad de Polymarket;
 - libro de órdenes, apuestas ganadas y perdidas, y resolución;
 - que el modo sombra **no envía** nada y que solo `polymarket_real.py` puede enviar órdenes;
 - geobloqueo y las tres llaves;
 - mensajes y envíos por Telegram, ntfy, CallMeBot y Twilio;
-- recomendaciones LONG/SHORT y avisos separados.
+- recomendaciones LONG/SHORT y avisos separados;
+- ATR y RSI de Wilder contra valores de referencia, Wilson, Kelly, SL/TP con RR neto, tamaño de posición y métricas;
+- veto del riesgo y kill switch, bitácora que detecta alteraciones, salida estructurada y pesos de los agentes;
+- ciclo completo del bot Pro (entrada → TP con PnL y auditoría), descarte de la IA y salida por tiempo máximo;
+- calibración (Brier) de Polymarket.
+
+**CI:** `.github/workflows/ci.yml` compila todos los módulos y corre las pruebas en GitHub en cada push.
 
 ---
 
@@ -315,7 +352,8 @@ Las pruebas (29) usan clientes falsos y nunca se conectan a nada real. Cubren:
 - Las operaciones del modo paper **no aparecen** en la cuenta Demo de MEXC: su API no tiene sandbox.
 - En Streamlit Cloud (EE. UU.) MEXC está bloqueado y el bot usa Yahoo. **Para la demostración, correr la app en la computadora.**
 - Los bots y los avisos funcionan **mientras la página está abierta**.
-- El bot MEXC vende solo con ganancia (TP), pero una posición puede quedar abierta en pérdida no realizada.
+- La estrategia Pro opera poco a propósito: exige caída, P ≥ 55% de los agentes y RR neto ≥ 1 con costos. Para una
+  demostración rápida existe la estrategia Simple.
 - Sin conexión real no se verificaron el modo real de Polymarket ni la cantidad exacta ejecutada de cada orden real.
 - Los pronósticos son de un periodo. El modelo no garantiza ganancias.
 
@@ -331,3 +369,89 @@ Las pruebas (29) usan clientes falsos y nunca se conectan a nada real. Cubren:
 | El bot MEXC no compra o no vende | Usa compra al 0.2% y TP al 0.5%. |
 | Telegram: «presiona INICIAR» | Busca tu bot por su @usuario, mándale «hola» y vuelve a probar. |
 | No suena la notificación | Revisa los ajustes de notificaciones del celular para Telegram y cierra Telegram en la computadora. |
+
+
+---
+
+## Autoevaluación con la rúbrica
+Esta es la evaluación honesta de Investify contra la rúbrica *App de Trading con IA*.
+Niveles: 4 Excelente · 3 Competente · 2 En desarrollo · 1 Insuficiente.
+Donde algo queda fuera, se explica por qué.
+
+### 1 · App: FrontEnd y BackEnd (20%)
+| Indicador | Nivel | Evidencia / por qué |
+|---|---|---|
+| Arquitectura | 3 | Capas separadas: interfaz (`app.py`, `ui.py`), lógica (`mexc_bot`, `agentes`, `riesgo`, `polymarket_bot`) y gateway del broker (`mexc_cuenta`, `polymarket_real`). El navegador **nunca** llama al broker: todo pasa por el servidor de Streamlit. Hay diagrama, pero sin REST ni WebSocket (ver «Tiempo real»). |
+| FrontEnd | 3–4 | Datos en vivo, velas con SMA, Bollinger, RSI, MACD y ATR, mensajes de carga y error, y respaldo con Yahoo. Streamlit se adapta a pantallas chicas, pero la terminal está pensada para escritorio. |
+| BackEnd / API | 3 | Las rutas externas están documentadas (tabla abajo). Las órdenes se validan: mínimo 5 USDT, topes, redondeo al paso del par y frase para el modo real. Ante un rechazo, el par espera 5 minutos antes de reintentar. No hay API propia porque Streamlit no la necesita. |
+| Tiempo real | 2 | Sondeo cada 2–30 s con `st.fragment`. **Sin WebSocket**: Streamlit vuelve a dibujar la página en cada ciclo y para un bot de minutos el sondeo basta. Siguiente paso: el WebSocket de MEXC en un proceso aparte. |
+| Seguridad | 3–4 | Llaves en `.streamlit/secrets.toml`, fuera de Git y del cliente. Modo paper por defecto. El real exige frase y topes, y las pruebas verifican que el modo sombra no envía nada y que solo un módulo puede enviar órdenes. |
+| Persistencia y trazabilidad | 4 | Bitácora inmutable con hash encadenado SHA-256, verificación en la app y exportación en JSON; historial en CSV. |
+| Calidad y entrega | 4 | README completo, `iniciar.bat` (1 comando), modo paper sin llaves, 44 pruebas y CI en GitHub Actions. No hay revisión de tipos (mypy). |
+
+### 2 · Consideraciones financieras (25%)
+| Indicador | Nivel | Evidencia / por qué |
+|---|---|---|
+| Velas y datos | 3–4 | OHLCV de MEXC por temporalidad (1m/5m/15m/1h) en hora de Ciudad de México. ATR, RSI y SMA usan **solo velas cerradas**. El disparador usa el último precio, a propósito, para reaccionar a la caída. |
+| Análisis técnico | 4 | RSI y ATR de Wilder, MACD y SMA, probados contra valores de referencia en `tests/test_estrategia.py`. Cada uno tiene un porqué en un agente. |
+| Métricas de desempeño | 4 | Win rate con IC de Wilson, expectativa, profit factor, RR neto, acierto de equilibrio, drawdown máximo y Sharpe por operación, todas netas de costos. |
+| Costos | 3–4 | 0.10% de comisión + 0.05% de deslizamiento por lado en cada cálculo, con el acierto de equilibrio publicado. No se separa maker y taker porque todas las órdenes son a mercado (taker). |
+| Stop Loss y Take Profit | 4 | SL a 1.5·ATR, por debajo del ruido normal, y TP a 3·ATR, definidos al entrar. Una entrada con RR neto < 1 queda vetada. |
+| Tamaño de posición | 4 | 0.5% de riesgo hasta el SL. Kelly ½ sobre la cota inferior de Wilson, solo desde 30 operaciones, con tope por orden y por efectivo. |
+| Gestión de riesgo | 4 | Pérdida diaria, drawdown, posiciones máximas y racha de pérdidas. Kill switch automático o manual que solo una persona rearma. |
+
+### 3 · Aprendizaje (ML / DL) y predicciones (20%)
+| Indicador | Nivel | Evidencia / por qué |
+|---|---|---|
+| Problema y objetivo | 4 | Objetivo: y = P(t+1)/P(t) − 1, ligado a la regla «comprar si el estimado > δ». |
+| Datos y features | 3–4 | Rezagos y features calculados solo con el pasado y escalados con datos de entrenamiento. Fuente (Yahoo) y periodo (2015–2026) documentados. |
+| Validación | 3 | Separación temporal 70/15/15, 3 ventanas expandibles en VA y una sola evaluación en TE. **Falta dejar días de separación** (purga) entre conjuntos: con objetivo a 1 día el traslape es mínimo, pero queda como mejora. |
+| Comparación con línea base | 3 | Contra modelo lineal, comprar y mantener, y efectivo (NB1 y NB5). **Faltan** «operar al azar» y cruce de medias: el tiempo de GPU se usó en las 3 configuraciones × 2 redes × 3 semillas. |
+| Modelos (ML y DL) | 3–4 | Lineal (ML clásico) contra MLP y LSTM (DL), elegidos por RMSE en VA. Resultado en TE: la IA gana al lineal en 23 de 40 activos. |
+| Calibración y probabilidad | 3 | El bot Polymarket mide la calibración con **Brier** y una tabla «predicho vs real». La red DL da un rendimiento, no una probabilidad, y su umbral δ se elige en VA. |
+| Del modelo al PnL | 3 | Backtest en TE con comisión 0.10%, capital 100,000 y ejecución en t+1 (+5.76% promedio). El monitoreo de degradación y el reentrenamiento quedan como siguiente paso. |
+
+### 4 · IA como cerebro de operaciones (15%)
+| Indicador | Nivel | Evidencia / por qué |
+|---|---|---|
+| Arquitectura de agentes | 4 | 4 agentes de rol único (modelo DL, técnico, tendencia, volatilidad) y un coordinador con pesos. |
+| Salida estructurada | 4 | JSON validado con esquema: decisión, probabilidad 0–1, confianza 0–1, razón y votos. Es determinista (equivale a temperatura 0) y una salida inválida se convierte en «abstenerse». |
+| Jerarquía y vetos | 4 | El riesgo determinista tiene veto vinculante. La IA solo propone: no pone órdenes ni cambia tamaños o límites. |
+| Robustez | 3–4 | Si falta el pronóstico o las velas, el agente se abstiene; si todos se abstienen, no se opera. Los modelos corren en local. Si un modelo no carga, se usa el pronóstico guardado. |
+| Trazabilidad (Reflejo) | 4 | Cada compra guarda los votos, razones y probabilidad de cada agente en la bitácora. Los descartes y vetos también quedan registrados. |
+| Aprendizaje de pesos | 4 | Los pesos se auditan contra el PnL real con regla de Laplace y piso de 0.10, desde 10 operaciones. |
+| Seguridad del prompt | N/A | **No se usa un LLM**: los agentes son código determinista y verificable, sin costo por llamada y sin riesgo de inyección. Los datos externos (precios, mercados, mensajes) se tratan solo como datos. Los agentes tienen versión (`agentes-v1.0`). |
+
+### 5 · Trading: Entry, Long, Short (20%)
+| Indicador | Nivel | Evidencia / por qué |
+|---|---|---|
+| Tesis de la estrategia | 4 | Reversión a la media intradía, con el régimen donde funciona (lateral o alcista) y donde falla (bajista fuerte, que vigila el agente de tendencia). |
+| Entry | 3 | Condiciones medibles: caída ≥ 0.2%, P ≥ 55% y RR neto ≥ 1. Se usa orden a mercado porque son pares muy líquidos y se prioriza entrar en la caída; el deslizamiento se incluye en los costos. Las entradas no expiran. |
+| Long | 4 | Señal, confirmación de los agentes, SL bajo el invalidador (1.5·ATR), TP y tiempo máximo. |
+| Short | 4 | **Solo Long, con justificación:** MEXC Spot no permite vender en corto. En Polymarket, Down ≈ Short y la IA lo usa. |
+| Salidas | 4 | Prioridad definida: SL > TP > señal contraria de la IA > tiempo máximo. |
+| Ejecución | 2–3 | Órdenes a mercado con redondeo al paso del par y espera tras un rechazo. **Sin OCO ni bracket**: el bot vigila SL y TP en cada ciclo, que es posible porque la API Spot v3 de MEXC no ofrece OCO. |
+| Consistencia backtest ↔ paper | 2 | El backtest del NB5 es diario y el bot es intradía: **las reglas son distintas**. El pronóstico del backtest es uno de los agentes del bot. El deslizamiento real contra el supuesto todavía no se mide (requiere modo real). |
+
+**Estimado propio: ≈ 85–88/100** (factor = nivel ÷ 4, ponderado por criterio; el rango sale de los indicadores calificados «3–4»). Lo que más falta para 100:
+- tiempo real con WebSocket;
+- días de separación y más líneas base en los notebooks;
+- órdenes OCO;
+- un backtest intradía de la estrategia Pro con las mismas reglas que el paper.
+
+---
+
+## Rutas de API usadas
+| Servicio | Ruta | Método | Para qué | Autenticación |
+|---|---|---|---|---|
+| MEXC | `/api/v3/ticker/price` | GET | Último precio de los 10 pares | Pública |
+| MEXC | `/api/v3/klines` | GET | Velas OHLCV (1m, 5m, 15m, 60m) | Pública |
+| MEXC | `/api/v3/ticker/24hr` | GET | Cambio, máximo, mínimo y volumen de 24 h | Pública |
+| MEXC | `/api/v3/time` · `/exchangeInfo` | GET | Hora del servidor y paso mínimo por par | Pública |
+| MEXC | `/api/v3/account` · `/myTrades` | GET | Saldo y operaciones reales | HMAC-SHA256 |
+| MEXC | `/api/v3/order/test` · `/order` | POST | Probar y enviar órdenes a mercado | HMAC-SHA256 |
+| Polymarket | `gamma-api.polymarket.com/markets/slug/{slug}` | GET | Mercado de la hora (BTC/ETH Up or Down) | Pública |
+| Polymarket | `clob.polymarket.com/book?token_id=` | GET | Libro de órdenes | Pública |
+| Polymarket | `polymarket.com/api/geoblock` | GET | Revisa si el país puede operar | Pública |
+| Telegram | `api.telegram.org/bot{token}/sendMessage` · `/getUpdates` | POST/GET | Avisos al celular | Token del bot |
+| Yahoo Finance | `yfinance.download` | — | Datos diarios de 40 activos y respaldo | Pública |
