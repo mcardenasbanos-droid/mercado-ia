@@ -17,6 +17,25 @@ URL_CALLMEBOT = "https://api.callmebot.com/whatsapp.php"
 ULTIMOS = deque(maxlen=20)          # resultado de los últimos envíos (para mostrar en la app)
 
 
+CLAVES_AVISO = {"token", "tema", "apikey", "twilio_sid", "proveedor"}
+
+
+def buscar_seccion(todo):
+    """Encuentra la configuración de avisos aunque la sección se llame [WhatsApp], [telegram], [avisos]…
+    o aunque las llaves estén sueltas sin sección. Nunca toma [mexc] ni [polymarket]."""
+    if not isinstance(todo, dict):
+        return {}
+    for nombre in ("whatsapp", "telegram", "avisos", "notificaciones"):
+        for k, v in todo.items():
+            if isinstance(v, dict) and k.strip().lower() == nombre:
+                return dict(v)
+    for k, v in todo.items():
+        if isinstance(v, dict) and k.lower() not in ("mexc", "polymarket") and CLAVES_AVISO & {x.lower() for x in v}:
+            return dict(v)
+    sueltas = {k: v for k, v in todo.items() if not isinstance(v, dict)}
+    return sueltas if CLAVES_AVISO & {x.lower() for x in sueltas} else {}
+
+
 def _limpiar_tel(t):
     t = "".join(ch for ch in str(t or "") if ch.isdigit() or ch == "+")
     return ("+" + t) if t and not t.startswith("+") else t
@@ -32,14 +51,12 @@ def leer_config(ruta_secrets, seccion_nube=None):
         try:
             with open(ruta_secrets, encoding="utf-8-sig") as f:
                 todo = tomllib.loads(f.read())
-            # acepta [whatsapp], [telegram] o [avisos] (lo que sea más fácil de recordar)
-            sec = todo.get("whatsapp") or todo.get("telegram") or todo.get("avisos") or {}
-            if not sec and todo.get("token"):        # llaves sueltas, sin sección
-                sec = todo
+            sec = buscar_seccion(todo)
+            cfg["secciones"] = sorted(k for k, v in todo.items() if isinstance(v, dict))
         except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
             cfg["problema"] = f"secrets.toml tiene un error de formato ({e})."
     if not sec and seccion_nube:
-        sec = {k: v for k, v in dict(seccion_nube).items()}
+        sec = buscar_seccion(dict(seccion_nube)) or {}
     if not sec and not os.path.exists(ruta_secrets) and not os.environ.get("WHATSAPP_PROVEEDOR"):
         cfg["problema"] = ("No hay archivo .streamlit/secrets.toml. Es normal en la página pública de Streamlit Cloud: "
                            "los avisos funcionan en tu computadora, o agrega la sección [whatsapp] en los Secrets de la app (ver README).")
@@ -94,8 +111,10 @@ def leer_config(ruta_secrets, seccion_nube=None):
                                    'Ojo: NO es la apikey de MEXC; es la que CallMeBot te manda por WhatsApp.')
             elif not (cfg["telefono"] and cfg["apikey"]):
                 if not sec:
-                    cfg["problema"] = ('Tu secrets.toml no tiene la sección [whatsapp]. Agrega al final: [whatsapp] / '
-                                       'proveedor = "telegram" / token = "..." / activo = "1" (cada uno en su renglón).')
+                    vistas = ", ".join(f"[{x}]" for x in cfg.get("secciones", [])) or "ninguna"
+                    cfg["problema"] = (f'No encontré la sección [whatsapp] (secciones encontradas: {vistas}). Agrega: [whatsapp] / '
+                                       'proveedor = "telegram" / token = "..." / chat_id = "..." / activo = "1" (cada uno en su renglón). '
+                                       'En Streamlit Cloud: Settings → Secrets → Save y luego Reboot app.')
                 else:
                     cfg["problema"] = (f'La sección [whatsapp] solo tiene: {", ".join(sorted(sec)) or "nada"}. '
                                        'Para Telegram necesita token = "..." (el que te dio @BotFather).')

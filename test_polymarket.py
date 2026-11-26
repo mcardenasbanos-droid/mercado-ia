@@ -397,8 +397,16 @@ def test_config_flexible(tmp_path):
     assert cfg["listo"] and cfg["proveedor"] == "telegram"
     ruta.write_text('[mexc]\napi_key = "x"\n', encoding="utf-8")
     c2 = wa.leer_config(str(ruta))
-    assert not c2["listo"] and "no tiene la sección" in c2["problema"]
+    assert not c2["listo"] and "[mexc]" in c2["problema"]
     assert wa.leer_config(str(ruta), {"token": tok})["listo"]
     ruta.write_text('[whatsapp]\nactivo = "1"\n', encoding="utf-8")
     c3 = wa.leer_config(str(ruta))
     assert "solo tiene: activo" in c3["problema"]
+
+
+def test_seccion_con_mayusculas(tmp_path):
+    tok = "123456789:" + "D" * 35
+    ruta = tmp_path / "secrets.toml"
+    ruta.write_text(f'[mexc]\napi_key = "zz"\n\n[WhatsApp]\nproveedor = "telegram"\ntoken = "{tok}"\n', encoding="utf-8")
+    assert wa.leer_config(str(ruta))["listo"]
+    assert wa.buscar_seccion({"mexc": {"api_key": "a"}}) == {}

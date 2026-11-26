@@ -228,10 +228,8 @@ CLAVE, SECRETO, PROBLEMA_LLAVES = llaves_mexc()
 def seccion_nube(nombre):
     """Secrets de Streamlit Cloud (se usan si el archivo local no trae la sección)."""
     try:
-        for n in (nombre, "telegram", "avisos"):
-            if n in st.secrets:
-                return dict(st.secrets[n])
-        return dict(st.secrets) if "token" in st.secrets else None
+        todo = {k: (dict(v) if hasattr(v, "keys") else v) for k, v in st.secrets.items()}
+        return wa.buscar_seccion(todo) or None
     except Exception:
         return None
 
