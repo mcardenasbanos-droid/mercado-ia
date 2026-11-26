@@ -836,6 +836,15 @@ with tab_bot:
                  f"{len(r['abiertas'])} posiciones abiertas"),
                 ("Rendimiento", fpct(r["rendimiento"]), ui.tono(r["rendimiento"]), f"{r['ganancia_total']:+,.2f} USDT"),
             ]))
+        else:
+            # Sin bot: la franja se muestra igual, en ceros, para que el resumen siempre esté visible
+            html(ui.franja([
+                ("Capital inicial", f"{mb.CAPITAL_MEXC:,.2f} USDT", "neu", "modo paper · bot detenido"),
+                ("Equity total", f"{mb.CAPITAL_MEXC:,.2f} USDT", "neu", f"disponible {mb.CAPITAL_MEXC:,.2f}"),
+                ("PNL realizado", "+0.00 USDT", "neu", "sin ventas todavía"),
+                ("PNL no realizado", "+0.00 USDT", "neu", "0 posiciones abiertas"),
+                ("Rendimiento", "+0.00%", "neu", "inicia el bot para empezar"),
+            ]))
 
         # ---------- par seleccionado ----------
         if st.session_state.get("par_sel") not in pares:
