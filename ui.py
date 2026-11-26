@@ -162,7 +162,7 @@ html, body, .stApp, .stMarkdown, p, li, label, h1, h2, h3, h4, input, textarea, 
     font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, sans-serif;}}
 [data-testid="stIconMaterial"] {{font-family: 'Material Symbols Rounded' !important;}}
 .stApp {{background: {FONDO};}}
-.block-container {{padding: 0.6rem 1.4rem 2.5rem 1.4rem; max-width: 1680px;}}
+.block-container {{padding: 2.9rem 1.4rem 2.5rem 1.4rem; max-width: 1680px;}}
 #MainMenu, footer, [data-testid="stDecoration"], [data-testid="stAppDeployButton"] {{display: none;}}
 header[data-testid="stHeader"] {{background: transparent; height: 0;}}
 [data-testid="stSidebar"] {{display: none;}}
