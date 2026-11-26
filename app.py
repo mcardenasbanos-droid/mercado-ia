@@ -226,11 +226,12 @@ precios_usd = {t: nc.precio_usd(float(precios[t]["cierre"].iloc[-1]), INFO.loc[t
 
 CLAVE, SECRETO, PROBLEMA_LLAVES = llaves_mexc()
 def seccion_nube(nombre):
-    """Secrets de Streamlit Cloud (solo si no hay archivo local)."""
-    if os.path.exists(RUTA_SECRETOS):
-        return None
+    """Secrets de Streamlit Cloud (se usan si el archivo local no trae la sección)."""
     try:
-        return dict(st.secrets[nombre]) if nombre in st.secrets else None
+        for n in (nombre, "telegram", "avisos"):
+            if n in st.secrets:
+                return dict(st.secrets[n])
+        return dict(st.secrets) if "token" in st.secrets else None
     except Exception:
         return None
 

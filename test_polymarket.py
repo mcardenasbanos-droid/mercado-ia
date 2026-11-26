@@ -387,3 +387,18 @@ def test_config_desde_secrets_de_la_nube(tmp_path):
     cfg = wa.leer_config(str(tmp_path / "no_existe.toml"), {"proveedor": "telegram", "token": tok, "chat_id": "555"})
     assert cfg["listo"] and cfg["chat_id"] == "555"
     assert not wa.leer_config(str(tmp_path / "no_existe.toml"))["listo"]
+
+
+def test_config_flexible(tmp_path):
+    tok = "123456789:" + "C" * 35
+    ruta = tmp_path / "secrets.toml"
+    ruta.write_text(f'[mexc]\napi_key = "x"\n\n[telegram]\ntoken = "{tok}"\n', encoding="utf-8")
+    cfg = wa.leer_config(str(ruta))
+    assert cfg["listo"] and cfg["proveedor"] == "telegram"
+    ruta.write_text('[mexc]\napi_key = "x"\n', encoding="utf-8")
+    c2 = wa.leer_config(str(ruta))
+    assert not c2["listo"] and "no tiene la sección" in c2["problema"]
+    assert wa.leer_config(str(ruta), {"token": tok})["listo"]
+    ruta.write_text('[whatsapp]\nactivo = "1"\n', encoding="utf-8")
+    c3 = wa.leer_config(str(ruta))
+    assert "solo tiene: activo" in c3["problema"]

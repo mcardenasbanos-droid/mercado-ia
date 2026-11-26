@@ -31,7 +31,11 @@ def leer_config(ruta_secrets, seccion_nube=None):
     if os.path.exists(ruta_secrets):
         try:
             with open(ruta_secrets, encoding="utf-8-sig") as f:
-                sec = tomllib.loads(f.read()).get("whatsapp", {})
+                todo = tomllib.loads(f.read())
+            # acepta [whatsapp], [telegram] o [avisos] (lo que sea más fácil de recordar)
+            sec = todo.get("whatsapp") or todo.get("telegram") or todo.get("avisos") or {}
+            if not sec and todo.get("token"):        # llaves sueltas, sin sección
+                sec = todo
         except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
             cfg["problema"] = f"secrets.toml tiene un error de formato ({e})."
     if not sec and seccion_nube:
@@ -40,7 +44,11 @@ def leer_config(ruta_secrets, seccion_nube=None):
         cfg["problema"] = ("No hay archivo .streamlit/secrets.toml. Es normal en la página pública de Streamlit Cloud: "
                            "los avisos funcionan en tu computadora, o agrega la sección [whatsapp] en los Secrets de la app (ver README).")
     g = lambda k, env="": str(sec.get(k, os.environ.get(env, "")) or "").strip()
-    cfg["proveedor"] = (g("proveedor", "WHATSAPP_PROVEEDOR") or "callmebot").lower()
+    proveedor = g("proveedor", "WHATSAPP_PROVEEDOR").lower().strip()
+    if not proveedor:                          # si no lo escribiste, se deduce de las llaves
+        proveedor = ("telegram" if g("token") else "ntfy" if g("tema") else
+                     "twilio" if g("twilio_sid") else "callmebot")
+    cfg["proveedor"] = proveedor
     cfg["telefono"] = _limpiar_tel(g("telefono", "WHATSAPP_TELEFONO"))
     cfg["activo"] = (g("activo", "WHATSAPP_ACTIVO") or "1") == "1"
 
@@ -85,7 +93,12 @@ def leer_config(ruta_secrets, seccion_nube=None):
                 cfg["problema"] = (f'La apikey tiene {len(cfg["apikey"])} dígitos; las de CallMeBot suelen tener 6 o 7. '
                                    'Ojo: NO es la apikey de MEXC; es la que CallMeBot te manda por WhatsApp.')
             elif not (cfg["telefono"] and cfg["apikey"]):
-                cfg["problema"] = ('En secrets.toml falta la sección [whatsapp] con proveedor = "telegram" y token = "...".')
+                if not sec:
+                    cfg["problema"] = ('Tu secrets.toml no tiene la sección [whatsapp]. Agrega al final: [whatsapp] / '
+                                       'proveedor = "telegram" / token = "..." / activo = "1" (cada uno en su renglón).')
+                else:
+                    cfg["problema"] = (f'La sección [whatsapp] solo tiene: {", ".join(sorted(sec)) or "nada"}. '
+                                       'Para Telegram necesita token = "..." (el que te dio @BotFather).')
         llaves_ok = bool(cfg["apikey"])
     cfg["listo"] = bool(cfg["telefono"] and llaves_ok and cfg["activo"]) and cfg["problema"] is None
     return cfg
