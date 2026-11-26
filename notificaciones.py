@@ -22,8 +22,9 @@ def _limpiar_tel(t):
     return ("+" + t) if t and not t.startswith("+") else t
 
 
-def leer_config(ruta_secrets):
-    """Lee [whatsapp]. proveedor = "callmebot" (por defecto) o "twilio". Nunca expone llaves."""
+def leer_config(ruta_secrets, seccion_nube=None):
+    """Lee [whatsapp] del archivo secrets.toml o, si no existe, de los Secrets de Streamlit Cloud
+    (seccion_nube). proveedor = "telegram", "ntfy", "callmebot" (por defecto) o "twilio". Nunca expone llaves."""
     import tomllib
     sec = {}
     cfg = {"problema": None}
@@ -33,6 +34,11 @@ def leer_config(ruta_secrets):
                 sec = tomllib.loads(f.read()).get("whatsapp", {})
         except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
             cfg["problema"] = f"secrets.toml tiene un error de formato ({e})."
+    if not sec and seccion_nube:
+        sec = {k: v for k, v in dict(seccion_nube).items()}
+    if not sec and not os.path.exists(ruta_secrets) and not os.environ.get("WHATSAPP_PROVEEDOR"):
+        cfg["problema"] = ("No hay archivo .streamlit/secrets.toml. Es normal en la página pública de Streamlit Cloud: "
+                           "los avisos funcionan en tu computadora, o agrega la sección [whatsapp] en los Secrets de la app (ver README).")
     g = lambda k, env="": str(sec.get(k, os.environ.get(env, "")) or "").strip()
     cfg["proveedor"] = (g("proveedor", "WHATSAPP_PROVEEDOR") or "callmebot").lower()
     cfg["telefono"] = _limpiar_tel(g("telefono", "WHATSAPP_TELEFONO"))
@@ -79,7 +85,7 @@ def leer_config(ruta_secrets):
                 cfg["problema"] = (f'La apikey tiene {len(cfg["apikey"])} dígitos; las de CallMeBot suelen tener 6 o 7. '
                                    'Ojo: NO es la apikey de MEXC; es la que CallMeBot te manda por WhatsApp.')
             elif not (cfg["telefono"] and cfg["apikey"]):
-                cfg["problema"] = "Faltan telefono y apikey en la sección [whatsapp] de .streamlit/secrets.toml."
+                cfg["problema"] = ('En secrets.toml falta la sección [whatsapp] con proveedor = "telegram" y token = "...".')
         llaves_ok = bool(cfg["apikey"])
     cfg["listo"] = bool(cfg["telefono"] and llaves_ok and cfg["activo"]) and cfg["problema"] is None
     return cfg

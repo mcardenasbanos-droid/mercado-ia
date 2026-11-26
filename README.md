@@ -194,7 +194,11 @@ Apuesta en los mercados **«Bitcoin Up or Down»** y **«Ethereum Up or Down»**
    ```
 5. Reinicia la app y abre **Bot MEXC → «Avisos por WhatsApp»** y presiona **«Enviar WhatsApp de prueba»** (los avisos llegan al servicio que elegiste). La app detecta tu chat sola y lo guarda en `telegram_chat.txt`.
 
-Otros servicios que también funcionan son `proveedor = "ntfy"` (con `tema`), `"callmebot"` (con `telefono` y `apikey`) y `"twilio"` (con `telefono`, `twilio_sid` y `twilio_token`). Los avisos se envían **mientras la app está abierta en tu computadora**.
+**En la página pública (Streamlit Cloud):** en share.streamlit.io → tu app → ⋮ → **Settings → Secrets**, pega **solo** la
+sección `[whatsapp]` con `proveedor`, `token`, `chat_id` (el número que quedó en tu `telegram_chat.txt`) y `activo`.
+**Nunca pongas ahí las llaves de MEXC ni de Polymarket.** Los avisos llegan mientras alguien tenga abierta la página.
+
+Otros servicios que también funcionan son `proveedor = "ntfy"` (con `tema`), `"callmebot"` (con `telefono` y `apikey`) y `"twilio"` (con `telefono`, `twilio_sid` y `twilio_token`). Los avisos se envían **mientras la app está abierta** (en tu computadora o en la página pública).
 
 ---
 

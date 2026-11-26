@@ -225,7 +225,17 @@ precios_usd = {t: nc.precio_usd(float(precios[t]["cierre"].iloc[-1]), INFO.loc[t
                for t in TICKERS if t in precios and INFO.loc[t, "moneda_cotizada"] in tasas}
 
 CLAVE, SECRETO, PROBLEMA_LLAVES = llaves_mexc()
-WA_CFG = wa.leer_config(RUTA_SECRETOS)
+def seccion_nube(nombre):
+    """Secrets de Streamlit Cloud (solo si no hay archivo local)."""
+    if os.path.exists(RUTA_SECRETOS):
+        return None
+    try:
+        return dict(st.secrets[nombre]) if nombre in st.secrets else None
+    except Exception:
+        return None
+
+
+WA_CFG = wa.leer_config(RUTA_SECRETOS, seccion_nube("whatsapp"))
 CLIENTE = cliente_mexc(CLAVE, SECRETO) if CLAVE and SECRETO else None
 
 # Aviso al celular de los activos que la IA marca como recomendables (una sola vez por activo y periodo)
@@ -882,7 +892,7 @@ with tab_bot:
                           "cada vez que un bot compre o venda (MEXC: Long / cerrar Long · Polymarket: Up ≈ Long, Down ≈ Short)."))
         else:
             motivo_wa = WA_CFG["problema"] or 'Pon activo = "1" en la sección [whatsapp].'
-            html(ui.aviso(f"Avisos apagados. {ui.esc(motivo_wa)} Instrucciones en el README (CallMeBot, gratis).", "warn"))
+            html(ui.aviso(f"Avisos apagados. {ui.esc(motivo_wa)} Instrucciones en el README (sección «Avisos al celular»).", "warn"))
         if st.button("Enviar WhatsApp de prueba", disabled=not WA_CFG["listo"]):
             ok, detalle = wa.enviar(WA_CFG, "✅ *Investify*: prueba de avisos por WhatsApp. ¡Funciona!")
             (st.success if ok else st.error)(detalle)
