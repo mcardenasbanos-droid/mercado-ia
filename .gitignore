@@ -1,3 +1,8 @@
 portafolio.json
 __pycache__/
 .venv/
+bot_mexc.json
+.streamlit/secrets.toml
+polymarket_estado.json
+avisos_enviados.json
+telegram_chat.txt
