@@ -165,3 +165,30 @@ class ClienteMEXC:
         r = self._privado("POST", "/api/v3/order",
                           {"symbol": par, "side": "SELL", "type": "MARKET", "quantity": f"{cantidad:f}"})
         return self._resultado(par, r)
+
+
+def leer_llaves(ruta):
+    """Lee las llaves de un archivo secrets.toml. Devuelve (api_key, secret_key, diagnóstico).
+
+    Acepta [mexc] con api_key/secret_key (o access_key/secret) o las llaves sueltas.
+    El diagnóstico nunca muestra el valor de las llaves."""
+    import os
+    import tomllib
+    if not os.path.exists(ruta):
+        carpeta = os.path.dirname(ruta)
+        parecidos = [f for f in (os.listdir(carpeta) if os.path.isdir(carpeta) else []) if f.startswith("secrets")]
+        return "", "", (f"No encontré el archivo en {ruta}."
+                         + (f" Encontré: {', '.join(parecidos)}. Renómbralo exactamente a secrets.toml." if parecidos else ""))
+    try:
+        with open(ruta, encoding="utf-8-sig") as f:          # utf-8-sig tolera el BOM de Windows
+            datos = tomllib.loads(f.read())
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        return "", "", (f"El archivo secrets.toml tiene un error de formato ({e}). Revisa que cada llave esté "
+                         f'entre comillas rectas "así" y que la primera línea sea [mexc].')
+    sec = datos.get("mexc", datos.get("MEXC", datos))
+    api = sec.get("api_key") or sec.get("access_key") or sec.get("MEXC_API_KEY") or ""
+    secreto = sec.get("secret_key") or sec.get("secret") or sec.get("MEXC_SECRET_KEY") or ""
+    if api and secreto:
+        return str(api).strip(), str(secreto).strip(), None
+    return "", "", (f"El archivo existe pero no tiene api_key y secret_key dentro de [mexc]. "
+                    f"Nombres que encontré: {', '.join(map(str, sec.keys())) or 'ninguno'}.")

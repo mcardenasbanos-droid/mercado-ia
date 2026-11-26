@@ -35,6 +35,10 @@ PARES = {  # par de MEXC: ticker equivalente de Yahoo (respaldo)
     "XRPUSDT": "XRP-USD", "ADAUSDT": "ADA-USD", "DOGEUSDT": "DOGE-USD", "LTCUSDT": "LTC-USD",
     "LINKUSDT": "LINK-USD", "AVAXUSDT": "AVAX-USD",
 }
+# Pares disponibles en la Demo Trading de MEXC (futuros USDT-M). El bot opera todos sus pares en modo paper,
+# pero solo estos se pueden copiar a la demo.
+PARES_DEMO_MEXC = ["BTCUSDT", "ETHUSDT"]
+
 INTERVALOS = {"1 minuto": "1m", "5 minutos": "5m", "15 minutos": "15m", "1 hora": "60m"}
 _YAHOO_INTERVALO = {"1m": ("1m", "1d"), "5m": ("5m", "5d"), "15m": ("15m", "5d"), "60m": ("60m", "1mo")}
 
@@ -87,6 +91,33 @@ def velas_mexc(par, intervalo="1m", limite=120):
     for c in ["apertura", "maximo", "minimo", "cierre", "volumen"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df.dropna()
+
+
+def estadisticas_24h(pares):
+    """Cambio, máximo, mínimo y volumen de las últimas 24 h desde MEXC: {par: {...}}."""
+    try:
+        r = _sesion.get(f"{URL_MEXC}/api/v3/ticker/24hr", timeout=6)
+        r.raise_for_status()
+        datos = r.json()
+    except (requests.RequestException, ValueError) as e:
+        raise FuenteNoDisponible(f"MEXC no respondió: {e}") from e
+    if not isinstance(datos, list):
+        raise FuenteNoDisponible("Respuesta inesperada de MEXC (24 h).")
+    salida = {}
+    for d in datos:
+        par = d.get("symbol")
+        if par not in pares:
+            continue
+        try:
+            ultimo, apertura = float(d["lastPrice"]), float(d["openPrice"])
+            salida[par] = {"ultimo": ultimo, "cambio": ultimo / apertura - 1 if apertura else float("nan"),
+                           "maximo": float(d.get("highPrice", "nan")), "minimo": float(d.get("lowPrice", "nan")),
+                           "volumen": float(d.get("quoteVolume", "nan"))}
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not salida:
+        raise FuenteNoDisponible("MEXC no devolvió estadísticas de 24 h.")
+    return salida
 
 
 def _yahoo_minuto(tickers, intervalo="1m"):
@@ -347,3 +378,17 @@ def resumen(bot):
         "mejor": max((o["ganancia_usdt"] for o in ventas), default=None),
         "minutos": minutos, "por_par": por_par, "abiertas": abiertas,
     }
+
+
+def clave_op(op):
+    """Identificador estable de una operación (para marcarla como copiada a MEXC Demo)."""
+    return f"{op.get('bot_id', '')}|{op['fecha']}|{op['par']}|{op['tipo']}"
+
+
+def pendientes_demo(est):
+    """Operaciones ejecutadas en modo paper de los pares de la demo que aún no se copian a MEXC Demo."""
+    copiadas = set(est.get("copiadas", [])) | set(est.get("omitidas", []))
+    bot = est.get("bot") or {}
+    return [o for o in bot.get("operaciones", [])
+            if o["par"] in PARES_DEMO_MEXC and o.get("estado", "Ejecutada") == "Ejecutada"
+            and o.get("modo", "paper") == "paper" and clave_op(o) not in copiadas]

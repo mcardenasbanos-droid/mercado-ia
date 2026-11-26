@@ -9,3 +9,6 @@ tzdata
 # Usa las MISMAS versiones que tu Colab (ver README, paso 3):
 scikit-learn>=1.4
 tensorflow>=2.16
+# Opcional, solo para los modos sombra y real de Polymarket (SDK oficial, en beta):
+# polymarket-client
+# Para correr las pruebas:  pip install pytest  y  python -m pytest tests -q
